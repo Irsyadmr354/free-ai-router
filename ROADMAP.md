@@ -63,8 +63,26 @@ Update terakhir: 2026-07-06 (setelah v5.1.0 — audit menyeluruh + backlog lengk
 - ✅ SambaNova dihapus (tidak genuinely free)
 - ✅ OpenCode Zen provider dengan auto-sync model
 
-### v5.0.0
-- ✅ Circuit breaker (CLOSED/OPEN/HALF_OPEN per provider)
+### v5.2.0
+- ✅ Token Saving module (`lib/token-saver.js`) — 4-tier pipeline
+- ✅ Tier 0: `normalizeWhitespace()`, `minifyStructuredContent()` (JSON/CSS)
+- ✅ Tier 1: `trimContextWindow()`, `deduplicateRepeatedBlocks()`
+- ✅ Tier 2: `applyAbbreviationDictionary()` (ROI-checked, legend auto-injected), `compactStructuredData()`
+- ✅ Tier 3: `summarizeContextViaLLM()` (opt-in explicit, warning mandatory, always logged)
+- ✅ `get_token_savings_report` MCP tool
+- ✅ `chat_completion`: `allow_lossy_summarization`, `abbreviation_dictionary`, `show_token_savings` params
+- ✅ HTTP proxy: `x_token_savings` field in non-streaming response
+- ✅ 6 new config getters + numeric validation in `validateConfig()`
+
+### v5.1.0
+- ✅ `.gitattributes` — consistent LF line endings
+- ✅ `openapi.yaml` — OpenAPI spec for `http-server.js`
+- ✅ `scripts/check-syntax.js` + `npm run check`
+- ✅ `lib/task-routing.js` — semantic model routing by task type
+- ✅ `get_server_health` MCP tool
+- ✅ `show_all_models` parameter in `list_providers`
+- ✅ Per-provider streaming timeout (`STREAM_TIMEOUT_*_MS`)
+- ✅ `MAX_RETRIES_PER_PROVIDER` config
 - ✅ Request queue (hold request saat semua provider unavailable)
 - ✅ Auto-discover OpenRouter free models (live sync dari API, 25+ model)
 - ✅ Groq CHAT_MODELS whitelist (pisah chat model dari Whisper/STT/TTS)
@@ -89,7 +107,7 @@ Update terakhir: 2026-07-06 (setelah v5.1.0 — audit menyeluruh + backlog lengk
 
 ## Backlog — Belum diimplementasi
 
-Tidak ada. Semua item dari audit sebelumnya (#1-16) sudah diimplementasikan per v5.1.0.
+Semua item backlog sebelumnya sudah diimplementasi per v5.2.0.
 Item baru dari audit selanjutnya akan ditambahkan di sini.
 
 ---
@@ -104,4 +122,4 @@ Item baru dari audit selanjutnya akan ditambahkan di sini.
 
 ---
 
-*Last updated: 2025-07-06 (v5.0.0)*
+*Last updated: 2025-07-06 (v5.2.0)*
