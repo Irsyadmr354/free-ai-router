@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "free-ai-router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Free AI Router",
+      "options": {
+        "baseURL": "http://localhost:8787/v1"
+      },
+      "models": {
+        "openrouter/free": { "name": "Free AI Router (auto fallback)" }
+      }
+    }
+  }
+}

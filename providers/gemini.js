@@ -59,12 +59,13 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
   if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };
 
   // Gemini expects OpenAI-style tool schemas translated into functionDeclarations.
+  // Strip fields Gemini does not accept: $schema, additionalProperties, etc.
   if (tools?.length) {
     body.tools = [{
       functionDeclarations: tools.map((t) => ({
         name: t.function?.name ?? t.name,
         description: t.function?.description ?? t.description,
-        parameters: t.function?.parameters ?? t.parameters,
+        parameters: sanitizeGeminiParameters(t.function?.parameters ?? t.parameters),
       })),
     }];
   }
@@ -300,4 +301,32 @@ async function doFetch(provider, url, options) {
   }
 
   return response;
+}
+
+/**
+ * Strip fields that Gemini rejects in tool parameter schemas.
+ * Gemini's functionDeclarations.parameters is a subset of JSON Schema —
+ * it does NOT accept: $schema, additionalProperties, $ref, $defs, or any
+ * field starting with "$". This function recursively cleans a parameters
+ * object before sending it to Gemini.
+ * @param {object|undefined} params
+ * @returns {object|undefined}
+ */
+function sanitizeGeminiParameters(params) {
+  if (!params || typeof params !== "object") return params;
+
+  const BLOCKED_KEYS = new Set(["$schema", "$ref", "$defs", "$id", "$comment", "additionalProperties"]);
+
+  function clean(obj) {
+    if (Array.isArray(obj)) return obj.map(clean);
+    if (typeof obj !== "object" || obj === null) return obj;
+    const result = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (BLOCKED_KEYS.has(k) || k.startsWith("$")) continue;
+      result[k] = clean(v);
+    }
+    return result;
+  }
+
+  return clean(params);
 }
