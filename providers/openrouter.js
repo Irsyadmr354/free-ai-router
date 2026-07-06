@@ -2,11 +2,9 @@
  * providers/openrouter.js
  * Calls the OpenRouter API (OpenAI-compatible) and returns a normalized response.
  *
- * IMPORTANT: Always use models with the ":free" suffix to stay on free tier.
- * NEVER use "openrouter/auto" — it is not a valid model ID and causes OpenRouter
- * to silently route to a paid model.
- *
- * Free models: https://openrouter.ai/models?q=:free
+ * "openrouter/free" is an official OpenRouter router that randomly selects from
+ * all 25+ free models available on OpenRouter. It is free, valid, and recommended.
+ * https://openrouter.ai/openrouter/free
  */
 
 import { normalizeSuccess, normalizeEmbedding, ProviderError } from "../lib/normalize.js";
@@ -15,9 +13,10 @@ import { consumeOpenAiSse } from "../lib/sse.js";
 
 const CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const EMBED_ENDPOINT = "https://openrouter.ai/api/v1/embeddings";
-export const DEFAULT_MODEL = "meta-llama/llama-3.2-3b-instruct:free";
+export const DEFAULT_MODEL = "openrouter/free";
 
 export const SUPPORTED_MODELS = [
+  "openrouter/free",
   "meta-llama/llama-3.2-3b-instruct:free",
   "mistralai/mistral-7b-instruct:free",
   "qwen/qwen-2.5-72b-instruct:free",
