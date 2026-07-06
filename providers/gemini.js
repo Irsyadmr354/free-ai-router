@@ -29,13 +29,21 @@ export const SUPPORTED_MODELS = [
  * @param {string} [p.model]
  * @param {string} p.apiKey
  */
-export async function callGemini({ prompt, systemPrompt, maxTokens, temperature, model = DEFAULT_MODEL, apiKey, imageUrl, imageBase64, imageMimeType, tools, responseFormat }) {
+export async function callGemini({ prompt, systemPrompt, maxTokens, temperature, model = DEFAULT_MODEL, apiKey, imageUrl, imageBase64, imageMimeType, tools, responseFormat, messages: providedMessages }) {
   const url = `${BASE}/${model}:generateContent?key=${apiKey}`;
 
-  const parts = [{ text: prompt }];
+  // Multi-turn history: translate OpenAI-style {role,content} messages into
+  // Gemini's `contents` array (role: user/model) instead of collapsing
+  // everything into one flattened `prompt` string, which previously
+  // silently dropped conversational turn structure for Gemini specifically
+  // (every other provider already forwards `messages` as-is).
+  const contents = providedMessages?.length
+    ? providedMessages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }))
+    : [{ role: "user", parts: [{ text: prompt }] }];
 
+  const lastContent = contents[contents.length - 1];
   if (imageBase64) {
-    parts.push({
+    lastContent.parts.push({
       inlineData: {
         mimeType: imageMimeType || "image/jpeg",
         data: imageBase64,
@@ -44,7 +52,7 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
   } else if (imageUrl) {
     // Gemini needs raw bytes, not a URL — fetch and inline as base64.
     const fetched = await fetchImageAsBase64(imageUrl);
-    parts.push({ inlineData: { mimeType: fetched.mimeType, data: fetched.data } });
+    lastContent.parts.push({ inlineData: { mimeType: fetched.mimeType, data: fetched.data } });
   }
 
   const generationConfig = { maxOutputTokens: maxTokens, temperature };
@@ -53,7 +61,7 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
   }
 
   const body = {
-    contents: [{ parts }],
+    contents,
     generationConfig,
   };
   if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -107,13 +115,17 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
  * @param {(text: string) => void} p.onDelta - called per content delta
  * @param {AbortSignal} [p.abortSignal] - external abort (e.g. client disconnect)
  */
-export async function streamGemini({ prompt, systemPrompt, maxTokens, temperature, model = DEFAULT_MODEL, apiKey, imageUrl, imageBase64, imageMimeType, tools, responseFormat, onDelta, abortSignal }) {
+export async function streamGemini({ prompt, systemPrompt, maxTokens, temperature, model = DEFAULT_MODEL, apiKey, imageUrl, imageBase64, imageMimeType, tools, responseFormat, onDelta, abortSignal, messages: providedMessages }) {
   const url = `${BASE}/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
-  const parts = [{ text: prompt }];
+  // Same multi-turn translation as callGemini() — see comment there.
+  const contents = providedMessages?.length
+    ? providedMessages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }))
+    : [{ role: "user", parts: [{ text: prompt }] }];
 
+  const lastContent = contents[contents.length - 1];
   if (imageBase64) {
-    parts.push({
+    lastContent.parts.push({
       inlineData: {
         mimeType: imageMimeType || "image/jpeg",
         data: imageBase64,
@@ -121,7 +133,7 @@ export async function streamGemini({ prompt, systemPrompt, maxTokens, temperatur
     });
   } else if (imageUrl) {
     const fetched = await fetchImageAsBase64(imageUrl);
-    parts.push({ inlineData: { mimeType: fetched.mimeType, data: fetched.data } });
+    lastContent.parts.push({ inlineData: { mimeType: fetched.mimeType, data: fetched.data } });
   }
 
   const generationConfig = { maxOutputTokens: maxTokens, temperature };
@@ -130,7 +142,7 @@ export async function streamGemini({ prompt, systemPrompt, maxTokens, temperatur
   }
 
   const body = {
-    contents: [{ parts }],
+    contents,
     generationConfig,
   };
   if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };

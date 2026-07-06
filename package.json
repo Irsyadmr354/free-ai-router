@@ -4,7 +4,7 @@
   "description": "MCP server that routes chat completions across free-tier LLM providers with automatic fallback",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5.0"
   },
   "bin": {
     "free-ai-router": "./index.js",
