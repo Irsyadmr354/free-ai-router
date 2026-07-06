@@ -43,6 +43,7 @@ import { dedupe } from "./lib/dedup.js";
 import { chunkContext } from "./lib/chunk.js";
 import { PROVIDER_REGISTRY, reorderProviders, executeProviderChain, buildReason } from "./lib/router-core.js";
 import { forwardStream } from "./lib/sse-forward.js";
+import { syncModels as syncOpenCodeZenModels } from "./providers/opencode-zen.js";
 
 const PORT = parseInt(process.env.PORT ?? "8787", 10);
 
@@ -339,4 +340,8 @@ server.listen(PORT, "127.0.0.1", () => {
   log(`API key field: any non-empty string works (e.g. "free-ai-router") — real auth is server-side via .env`);
   log(`Endpoints: POST ${base}/chat/completions | GET ${base}/models | GET ${base}/health`);
   log(`Provider order: ${getProviderOrder().join(" → ")}`);
+
+  // Sync OpenCode Zen free model list from API
+  const zenKey = getApiKeys()["opencode-zen"];
+  if (zenKey) syncOpenCodeZenModels(zenKey).catch(() => {});
 });

@@ -85,6 +85,7 @@ import { chunkContext } from "./lib/chunk.js";
 import { recordBenchmark, getAllBenchmarks, sortByBenchmark } from "./lib/benchmark.js";
 import { updateReputation, sortByReputation, getReputationSnapshot } from "./lib/reputation.js";
 import { listTemplates, loadTemplate, fillTemplate } from "./lib/templates.js";
+import { syncModels as syncOpenCodeZenModels } from "./providers/opencode-zen.js";
 import { summarizeUsage, buildMarkdownReport, buildCsvReport } from "./lib/report.js";
 import { startWarmupPool } from "./lib/warmup.js";
 import { startDashboard } from "./lib/dashboard.js";
@@ -1007,6 +1008,11 @@ log(`Provider order: ${getActiveProviderOrder().join(" → ")}`);
 
 // Non-blocking startup health check — runs after server is ready
 startupHealthCheck().catch((err) => logError(`Health check error: ${err.message}`));
+
+// Sync OpenCode Zen free model list from API (auto-update if models change)
+if (getApiKeys()["opencode-zen"]) {
+  syncOpenCodeZenModels(getApiKeys()["opencode-zen"]).catch(() => {});
+}
 
 // Optional background warm-up pool (PROVIDER_WARMUP_ENABLED=true)
 startWarmupPool(

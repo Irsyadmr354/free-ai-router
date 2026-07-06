@@ -5,23 +5,65 @@
  * OpenCode Zen is a curated gateway of tested, verified models.
  * Free-tier models available via OPENCODE_API_KEY.
  *
+ * ⚠️  The free models (DeepSeek V4 Flash Free, MiMo-V2.5 Free, etc.) are
+ * available for a limited time. Models are auto-synced from the OpenCode Zen
+ * API at startup — no manual updates needed if they change.
+ *
  * API docs: https://opencode.ai/zen
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
 import { getTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
+import { log, logError } from "../lib/logger.js";
 
 const CHAT_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
+const MODELS_ENDPOINT = "https://opencode.ai/zen/v1/models";
 export const DEFAULT_MODEL = "deepseek-v4-flash-free";
 
-export const SUPPORTED_MODELS = [
+const HARDCODED_MODELS = [
   "deepseek-v4-flash-free",
   "nemotron-3-ultra-free",
   "mimo-v2.5-free",
   "north-mini-code-free",
   "big-pickle",
 ];
+
+export let SUPPORTED_MODELS = [...HARDCODED_MODELS];
+
+let synced = false;
+
+/**
+ * Fetch the live model list from OpenCode Zen API and update SUPPORTED_MODELS.
+ * Filters to free models (model IDs ending with "-free" or named "big-pickle").
+ * Falls back to HARDCODED_MODELS if the API is unreachable.
+ * Call once at startup.
+ */
+export async function syncModels(apiKey) {
+  if (synced) return;
+  synced = true;
+
+  try {
+    const res = await fetch(MODELS_ENDPOINT, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    const liveFreeModels = (data.data ?? [])
+      .map((m) => m.id)
+      .filter((id) => id.endsWith("-free") || id === "big-pickle");
+
+    if (liveFreeModels.length > 0) {
+      SUPPORTED_MODELS = liveFreeModels;
+      log(`OpenCode Zen: synced ${liveFreeModels.length} free models (${liveFreeModels.join(", ")})`);
+    }
+  } catch (err) {
+    logError(`OpenCode Zen: model sync failed (${err.message}), using hardcoded list`);
+    SUPPORTED_MODELS = [...HARDCODED_MODELS];
+  }
+}
 
 /**
  * @param {object} p
