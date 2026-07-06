@@ -18,10 +18,30 @@ const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 export const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
 export const SUPPORTED_MODELS = [
+  // Llama
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant",
-  "mixtral-8x7b-32768",
-  "gemma2-9b-it",
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "meta-llama/llama-prompt-guard-2-22m",
+  "meta-llama/llama-prompt-guard-2-86m",
+  // Groq native
+  "groq/compound",
+  "groq/compound-mini",
+  // OpenAI OSS
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "openai/gpt-oss-safeguard-20b",
+  // Qwen
+  "qwen/qwen3-32b",
+  "qwen/qwen3.6-27b",
+  // Alam
+  "allam-2-7b",
+  // Canopy
+  "canopylabs/orpheus-arabic-saudi",
+  "canopylabs/orpheus-v1-english",
+  // Whisper (speech-to-text, tidak untuk chat tapi included untuk completeness)
+  "whisper-large-v3",
+  "whisper-large-v3-turbo",
 ];
 
 /**
