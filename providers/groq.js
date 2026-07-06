@@ -2,8 +2,10 @@
  * providers/groq.js
  * Calls the Groq API (OpenAI-compatible) and returns a normalized response.
  *
- * Supported free-tier models (default first):
- *   llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768, gemma2-9b-it
+ * SUPPORTED_MODELS: full Groq model catalog (used for list_providers, model validation).
+ * CHAT_MODELS: subset that actually supports chat/text-generation — used by the
+ *   fallback chain so it never accidentally tries whisper, prompt-guard, or TTS
+ *   models for a chat_completion call.
  *
  * Supports streaming (stream: true) — chunks are consumed server-side and
  * combined into a single response, but time-to-first-chunk is measured and
@@ -17,31 +19,50 @@ import { consumeOpenAiSse } from "../lib/sse.js";
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 export const DEFAULT_MODEL = "llama-3.3-70b-versatile";
 
+/**
+ * Full Groq model catalog — shown in list_providers / model validation.
+ * Includes non-chat models for completeness.
+ */
 export const SUPPORTED_MODELS = [
-  // Llama
+  // Chat / text-generation
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant",
   "meta-llama/llama-4-scout-17b-16e-instruct",
-  "meta-llama/llama-prompt-guard-2-22m",
-  "meta-llama/llama-prompt-guard-2-86m",
-  // Groq native
   "groq/compound",
   "groq/compound-mini",
-  // OpenAI OSS
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
   "openai/gpt-oss-safeguard-20b",
-  // Qwen
   "qwen/qwen3-32b",
   "qwen/qwen3.6-27b",
-  // Alam
   "allam-2-7b",
-  // Canopy
+  // Canopy (voice/speech — not for chat fallback)
   "canopylabs/orpheus-arabic-saudi",
   "canopylabs/orpheus-v1-english",
-  // Whisper (speech-to-text, tidak untuk chat tapi included untuk completeness)
+  // Content moderation classifiers (not chat models)
+  "meta-llama/llama-prompt-guard-2-22m",
+  "meta-llama/llama-prompt-guard-2-86m",
+  // Speech-to-text (not chat models)
   "whisper-large-v3",
   "whisper-large-v3-turbo",
+];
+
+/**
+ * Subset of SUPPORTED_MODELS that are genuine chat/text-generation models.
+ * The fallback chain uses this list — non-chat models are excluded so
+ * whisper / prompt-guard / Orpheus are never tried for a chat request.
+ */
+export const CHAT_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "groq/compound",
+  "groq/compound-mini",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3-32b",
+  "qwen/qwen3.6-27b",
+  "allam-2-7b",
 ];
 
 /**

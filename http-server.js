@@ -44,6 +44,7 @@ import { chunkContext } from "./lib/chunk.js";
 import { PROVIDER_REGISTRY, reorderProviders, executeProviderChain, buildReason } from "./lib/router-core.js";
 import { forwardStream } from "./lib/sse-forward.js";
 import { syncModels as syncOpenCodeZenModels } from "./providers/opencode-zen.js";
+import { syncFreeModels as syncOpenRouterModels } from "./providers/openrouter.js";
 
 const PORT = parseInt(process.env.PORT ?? "8787", 10);
 
@@ -344,4 +345,7 @@ server.listen(PORT, "127.0.0.1", () => {
   // Sync OpenCode Zen free model list from API
   const zenKey = getApiKeys()["opencode-zen"];
   if (zenKey) syncOpenCodeZenModels(zenKey).catch(() => {});
+
+  // Sync OpenRouter free model list from live API (no auth required)
+  syncOpenRouterModels().catch(() => {});
 });

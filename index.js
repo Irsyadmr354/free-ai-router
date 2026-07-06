@@ -86,10 +86,13 @@ import { recordBenchmark, getAllBenchmarks, sortByBenchmark } from "./lib/benchm
 import { updateReputation, sortByReputation, getReputationSnapshot } from "./lib/reputation.js";
 import { listTemplates, loadTemplate, fillTemplate } from "./lib/templates.js";
 import { syncModels as syncOpenCodeZenModels } from "./providers/opencode-zen.js";
+import { syncFreeModels as syncOpenRouterModels } from "./providers/openrouter.js";
 import { summarizeUsage, buildMarkdownReport, buildCsvReport } from "./lib/report.js";
 import { startWarmupPool } from "./lib/warmup.js";
 import { startDashboard } from "./lib/dashboard.js";
 import { startSpan, isTracingEnabled } from "./lib/tracing.js";
+import { allCircuitStates, circuitRemainingSeconds } from "./lib/circuit-breaker.js";
+import { getQueueDepth } from "./lib/request-queue.js";
 
 // ---------------------------------------------------------------------------
 // Provider registry — now sourced from lib/router-core.js (shared with
@@ -364,8 +367,15 @@ server.tool(
       const entry = PROVIDER_REGISTRY[name];
       const hasKey = Boolean(keys[name]);
       const remaining = cooldownMap[name] ?? 0;
+      const cbSecs = circuitRemainingSeconds(name);
       const budget = budgetUsage[name];
-      const status = !hasKey ? "no-key" : remaining > 0 ? `cooldown (${remaining}s)` : "active";
+      const status = !hasKey
+        ? "no-key"
+        : cbSecs > 0
+        ? `circuit-open (${cbSecs}s)`
+        : remaining > 0
+        ? `cooldown (${remaining}s)`
+        : "active";
       return {
         provider: name,
         status,
@@ -373,6 +383,7 @@ server.tool(
         budget: budget?.limit ? `${budget.count}/${budget.limit} per ${budget.window}${budget.nearLimit ? " (near limit!)" : ""}` : "unlimited/unknown",
         defaultModel: entry?.defaultModel ?? "—",
         supportedModels: entry?.models ?? [],
+        chatModels: entry?.chatModels ?? entry?.models ?? [],
         supportsImages: entry?.supportsImages ?? false,
         supportsTools: entry?.supportsTools ?? false,
         supportsStream: entry?.supportsStream ?? false,
@@ -386,8 +397,16 @@ server.tool(
     ].filter(Boolean).join(" ");
 
     const lines = rows.map((r) =>
-      `• ${r.provider} [${r.status}] rep:${r.reputation} ${flags(r)}\n  default: ${r.defaultModel}\n  models: ${r.supportedModels.join(", ")}\n  budget: ${r.budget}`
+      `• ${r.provider} [${r.status}] rep:${r.reputation} ${flags(r)}\n  default: ${r.defaultModel}\n  chat models: ${r.chatModels.join(", ")}\n  budget: ${r.budget}`
     );
+
+    const queueDepth = getQueueDepth();
+    const queueNote = queueDepth > 0 ? `\n\n⏳ Request queue: ${queueDepth} request(s) waiting for provider recovery` : "";
+
+    const circuitStates = allCircuitStates().filter((c) => c.state !== "CLOSED");
+    const circuitNote = circuitStates.length
+      ? `\n\nCircuit breaker open: ${circuitStates.map((c) => `${c.provider} (${c.state}, ${c.remainingSeconds}s)`).join(", ")}`
+      : "";
 
     const sourceNote = runtimeProviderOrder
       ? "(order set at runtime via set_provider_order)"
@@ -396,7 +415,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Provider order ${sourceNote}: ${order.join(" → ")}\n\n${lines.join("\n\n")}`,
+        text: `Provider order ${sourceNote}: ${order.join(" → ")}${circuitNote}${queueNote}\n\n${lines.join("\n\n")}`,
       }],
     };
   }
@@ -1013,6 +1032,9 @@ startupHealthCheck().catch((err) => logError(`Health check error: ${err.message}
 if (getApiKeys()["opencode-zen"]) {
   syncOpenCodeZenModels(getApiKeys()["opencode-zen"]).catch(() => {});
 }
+
+// Sync OpenRouter free model list from live API (no auth required)
+syncOpenRouterModels().catch(() => {});
 
 // Optional background warm-up pool (PROVIDER_WARMUP_ENABLED=true)
 startWarmupPool(

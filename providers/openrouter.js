@@ -5,17 +5,24 @@
  * "openrouter/free" is an official OpenRouter router that randomly selects from
  * all 25+ free models available on OpenRouter. It is free, valid, and recommended.
  * https://openrouter.ai/openrouter/free
+ *
+ * At startup, syncFreeModels() fetches the live free model list from the
+ * OpenRouter API and updates SUPPORTED_MODELS so the list stays current
+ * without manual updates.
  */
 
 import { normalizeSuccess, normalizeEmbedding, ProviderError } from "../lib/normalize.js";
 import { getTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
+import { log, logError } from "../lib/logger.js";
 
 const CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const EMBED_ENDPOINT = "https://openrouter.ai/api/v1/embeddings";
+const MODELS_ENDPOINT = "https://openrouter.ai/api/v1/models";
 export const DEFAULT_MODEL = "openrouter/free";
 
-export const SUPPORTED_MODELS = [
+// Hardcoded fallback — used if the live fetch fails at startup.
+const HARDCODED_FREE_MODELS = [
   "openrouter/free",
   "meta-llama/llama-3.2-3b-instruct:free",
   "mistralai/mistral-7b-instruct:free",
@@ -23,6 +30,50 @@ export const SUPPORTED_MODELS = [
   "google/gemma-3-27b-it:free",
   "microsoft/phi-4-reasoning:free",
 ];
+
+export let SUPPORTED_MODELS = [...HARDCODED_FREE_MODELS];
+
+let syncedOpenRouter = false;
+
+/**
+ * Fetch the live model list from OpenRouter and update SUPPORTED_MODELS with
+ * all models that are genuinely free (pricing.prompt === "0" on OpenRouter's API).
+ * Always keeps "openrouter/free" at index 0.
+ * Falls back to HARDCODED_FREE_MODELS if the API is unreachable.
+ * Safe to call once at startup without an API key — OpenRouter's /models endpoint
+ * is public and does not require authentication.
+ */
+export async function syncFreeModels() {
+  if (syncedOpenRouter) return;
+  syncedOpenRouter = true;
+
+  try {
+    const res = await fetch(MODELS_ENDPOINT, {
+      headers: { "HTTP-Referer": "https://localhost", "X-Title": "free-ai-router" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // OpenRouter marks free models with pricing.prompt === "0" (string)
+    const freeModels = (data.data ?? [])
+      .filter((m) => m.pricing?.prompt === "0" && m.pricing?.completion === "0")
+      .map((m) => m.id)
+      .filter((id) => id && id !== "openrouter/free"); // dedupe the special router
+
+    if (freeModels.length > 0) {
+      // Always keep openrouter/free first as the default catch-all
+      SUPPORTED_MODELS = ["openrouter/free", ...freeModels];
+      log(`OpenRouter: synced ${freeModels.length} free models from live API`);
+    } else {
+      SUPPORTED_MODELS = [...HARDCODED_FREE_MODELS];
+      log(`OpenRouter: no free models found in API response, using hardcoded list`);
+    }
+  } catch (err) {
+    logError(`OpenRouter: model sync failed (${err.message}), using hardcoded list`);
+    SUPPORTED_MODELS = [...HARDCODED_FREE_MODELS];
+  }
+}
 
 const HEADERS = (apiKey) => ({
   "Authorization": `Bearer ${apiKey}`,
