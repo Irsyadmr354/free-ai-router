@@ -10,6 +10,12 @@
  *   @cf/meta/llama-3.1-8b-instruct
  *   @cf/mistral/mistral-7b-instruct-v0.1
  *   @cf/google/gemma-7b-it
+ *
+ * Streaming: supported via `stream: true` in request body.
+ * Cloudflare's REST /ai/run/ endpoint returns standard SSE (text/event-stream)
+ * with data: {...} lines, same pattern as OpenAI-compatible providers.
+ * Each SSE event has shape: { response: "token", p: "...", usage: {...} }
+ * The final event is data: [DONE]
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
@@ -92,24 +98,94 @@ export async function callCloudflare({ prompt, systemPrompt, maxTokens, temperat
 
 /**
  * "Streaming" variant for Cloudflare Workers AI.
- *
- * NOTE: Cloudflare's /ai/run/ REST endpoint for these text-generation
- * models does not reliably support true incremental SSE the way the
- * OpenAI-compatible providers do (this has changed over time per-model and
- * isn't consistent across the free-tier catalog here). Rather than risk a
- * silently-broken stream, this simply calls the existing non-streaming
- * callCloudflare() and emits the ENTIRE response as a single onDelta() call
- * — i.e. simulated single-chunk "streaming". The client still gets a valid
- * OpenAI-style SSE stream from http-server.js, it just arrives as one chunk
- * instead of many. If Cloudflare's native streaming is confirmed later,
- * swap this to real incremental parsing.
+ * Uses `stream: true` in the request body — Cloudflare's REST /ai/run/
+ * endpoint returns proper SSE (text/event-stream). Each event has shape:
+ *   data: {"response":"token","p":"..."}
+ * terminated by data: [DONE]
  *
  * @param {object} p - same shape as callCloudflare(), plus:
- * @param {(text: string) => void} p.onDelta - called once with the full text
- * @param {AbortSignal} [p.abortSignal] - forwarded to the underlying call (not currently used by callCloudflare, no-op if absent)
+ * @param {(text: string) => void} p.onDelta - called per content token
+ * @param {AbortSignal} [p.abortSignal]
  */
-export async function streamCloudflare({ onDelta, abortSignal, ...rest }) {
-  const result = await callCloudflare(rest);
-  if (result.text) onDelta?.(result.text);
-  return { ...result, timing: { ...result.timing, streamed: true } };
+export async function streamCloudflare({ prompt, systemPrompt, maxTokens, temperature, model = DEFAULT_MODEL, apiKey, onDelta, abortSignal }) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!accountId) {
+    throw new ProviderError("Cloudflare CLOUDFLARE_ACCOUNT_ID env var is not set", null, "cloudflare", "Missing CLOUDFLARE_ACCOUNT_ID");
+  }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+  const messages = [];
+  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+  messages.push({ role: "user", content: prompt });
+
+  const body = { messages, max_tokens: maxTokens, temperature, stream: true };
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), getTimeout("cloudflare"));
+  if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
+
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const msg = err.name === "AbortError" ? "Request timed out after " + getTimeout("cloudflare") + "ms" : String(err.message);
+    throw new ProviderError(`Cloudflare network/timeout error: ${msg}`, null, "cloudflare", msg);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const bodyText = (await response.text().catch(() => "")).slice(0, 500);
+    throw new ProviderError(`Cloudflare returned HTTP ${response.status}`, response.status, "cloudflare", bodyText);
+  }
+
+  let fullText = "";
+  let firstChunkMs = null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // keep incomplete last line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+
+        let json;
+        try { json = JSON.parse(payload); } catch { continue; }
+
+        // Cloudflare SSE event shape: { response: "token", p: "..." }
+        const token = json?.response;
+        if (typeof token === "string" && token.length > 0) {
+          fullText += token;
+          if (firstChunkMs === null) firstChunkMs = Date.now() - startedAt;
+          onDelta?.(token);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!fullText) {
+    throw new ProviderError("Cloudflare streamed response was empty", response.status, "cloudflare", "No response tokens received");
+  }
+
+  return normalizeSuccess(fullText, "cloudflare", model, { promptTokens: 0, completionTokens: 0 }, { firstChunkMs, streamed: true });
 }
