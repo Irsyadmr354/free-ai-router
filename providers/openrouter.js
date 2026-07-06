@@ -2,8 +2,11 @@
  * providers/openrouter.js
  * Calls the OpenRouter API (OpenAI-compatible) and returns a normalized response.
  *
- * Use model = "openrouter/auto" to let OpenRouter pick the best free model,
- * or specify any model slug available on openrouter.ai (filter by "free" tier).
+ * IMPORTANT: Always use models with the ":free" suffix to stay on free tier.
+ * NEVER use "openrouter/auto" — it is not a valid model ID and causes OpenRouter
+ * to silently route to a paid model.
+ *
+ * Free models: https://openrouter.ai/models?q=:free
  */
 
 import { normalizeSuccess, normalizeEmbedding, ProviderError } from "../lib/normalize.js";
@@ -12,14 +15,14 @@ import { consumeOpenAiSse } from "../lib/sse.js";
 
 const CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const EMBED_ENDPOINT = "https://openrouter.ai/api/v1/embeddings";
-export const DEFAULT_MODEL = "openrouter/auto";
+export const DEFAULT_MODEL = "meta-llama/llama-3.2-3b-instruct:free";
 
 export const SUPPORTED_MODELS = [
-  "openrouter/auto",
-  "mistralai/mistral-7b-instruct:free",
   "meta-llama/llama-3.2-3b-instruct:free",
+  "mistralai/mistral-7b-instruct:free",
   "qwen/qwen-2.5-72b-instruct:free",
   "google/gemma-3-27b-it:free",
+  "microsoft/phi-4-reasoning:free",
 ];
 
 const HEADERS = (apiKey) => ({
@@ -197,7 +200,7 @@ export async function streamOpenRouter({ prompt, systemPrompt, maxTokens, temper
  * @param {string} [p.model]
  * @param {string} p.apiKey
  */
-export async function embedOpenRouter({ text, model = "openai/text-embedding-3-small", apiKey }) {
+export async function embedOpenRouter({ text, model = "mistralai/mistral-embed", apiKey }) {
   const body = { model, input: text };
 
   const controller = new AbortController();
