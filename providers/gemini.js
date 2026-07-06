@@ -140,7 +140,7 @@ export async function streamGemini({ prompt, systemPrompt, maxTokens, temperatur
       functionDeclarations: tools.map((t) => ({
         name: t.function?.name ?? t.name,
         description: t.function?.description ?? t.description,
-        parameters: t.function?.parameters ?? t.parameters,
+        parameters: sanitizeGeminiParameters(t.function?.parameters ?? t.parameters),
       })),
     }];
   }
@@ -315,7 +315,14 @@ async function doFetch(provider, url, options) {
 function sanitizeGeminiParameters(params) {
   if (!params || typeof params !== "object") return params;
 
-  const BLOCKED_KEYS = new Set(["$schema", "$ref", "$defs", "$id", "$comment", "additionalProperties"]);
+  const BLOCKED_KEYS = new Set([
+    "$schema", "$ref", "$defs", "$id", "$comment",
+    "additionalProperties",
+    // JSON Schema Draft 7 keywords that Gemini does not support
+    "exclusiveMinimum", "exclusiveMaximum",
+    "contains", "propertyNames", "if", "then", "else",
+    "readOnly", "writeOnly", "examples", "deprecated",
+  ]);
 
   function clean(obj) {
     if (Array.isArray(obj)) return obj.map(clean);
