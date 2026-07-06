@@ -95,6 +95,12 @@ import { startSpan, isTracingEnabled } from "./lib/tracing.js";
 import { allCircuitStates, circuitRemainingSeconds } from "./lib/circuit-breaker.js";
 import { getQueueDepth } from "./lib/request-queue.js";
 import { getTokenSavingStats } from "./lib/token-saver.js";
+import { getMabSnapshot } from "./lib/mab-routing.js";
+import { getAnomalySnapshot } from "./lib/anomaly-detector.js";
+import { getConversationStats, startRetentionScheduler as startConvRetention } from "./lib/conversations.js";
+import { startRetentionScheduler, getRetentionStatus } from "./lib/data-retention.js";
+import { getDatabaseSizes } from "./lib/db.js";
+import { semanticCacheStats } from "./lib/semantic-cache.js";
 
 // ---------------------------------------------------------------------------
 // Provider registry — now sourced from lib/router-core.js (shared with
@@ -1169,6 +1175,9 @@ log(`Provider order: ${getActiveProviderOrder().join(" → ")}`);
 // Non-blocking startup health check — runs after server is ready
 startupHealthCheck().catch((err) => logError(`Health check error: ${err.message}`));
 
+// Start data retention scheduler (runs hourly, archives old data)
+startRetentionScheduler();
+
 // Sync OpenCode Zen free model list from API (auto-update if models change)
 if (getApiKeys()["opencode-zen"]) {
   syncOpenCodeZenModels(getApiKeys()["opencode-zen"]).catch(() => {});
@@ -1193,19 +1202,37 @@ startDashboard(() => {
   const stats = getSessionStats();
   const totalCalls = stats.reduce((a, s) => a + s.calls, 0);
   const totalTokens = stats.reduce((a, s) => a + s.totalTokens, 0);
+  const budgetUsage = Object.fromEntries(getAllBudgetUsage(order).map((b) => [b.provider, b]));
+  const cache = cacheStats();
+  const circuits = allCircuitStates();
 
   const providers = order.map((name) => {
     const remaining = cooldownMap[name] ?? 0;
     const hasKey = Boolean(keys[name]);
-    const status = !hasKey ? "no-key" : remaining > 0 ? `cooldown (${remaining}s)` : "active";
+    const cbSecs = circuitRemainingSeconds(name);
+    const entry = PROVIDER_REGISTRY[name];
+    const status = !hasKey
+      ? "no-key"
+      : cbSecs > 0
+      ? `circuit-open (${cbSecs}s)`
+      : remaining > 0
+      ? `cooldown (${remaining}s)`
+      : "active";
     const rep = reputationSnapshot.find((r) => r.provider === name);
     const statObj = stats.find((s) => s.provider === name);
+    const budget = budgetUsage[name];
     return {
       provider: name,
       status,
       reputation: rep?.reputation ?? 70,
       avgLatencyMs: rep?.benchmark?.avgLatencyMs ?? null,
+      successRate: rep?.benchmark?.successRate ?? null,
       calls: statObj?.calls ?? 0,
+      defaultModel: entry?.defaultModel ?? null,
+      supportsImages: entry?.supportsImages ?? false,
+      supportsTools: entry?.supportsTools ?? false,
+      supportsStream: entry?.supportsStream ?? false,
+      budget: budget?.limit ? { count: budget.count, limit: budget.limit, window: budget.window } : null,
     };
   });
 
@@ -1213,7 +1240,11 @@ startDashboard(() => {
     providers,
     totalCalls,
     totalTokens,
-    cacheEntries: cacheStats().size,
+    uptimeSeconds: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
+    cache: { entries: cache.size, hitRate: cache.hitRate, hits: cache.hits, misses: cache.misses },
+    circuits: circuits.map((c) => ({ provider: c.provider, state: c.state, remainingSeconds: c.remainingSeconds })),
+    queueDepth: getQueueDepth(),
+    warnings: validateConfig(),
     recentLog: "(see /api/status or usage-log.jsonl for raw data)",
   };
 });

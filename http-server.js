@@ -48,6 +48,14 @@ import { syncFreeModels as syncOpenRouterModels } from "./providers/openrouter.j
 import { cacheStats } from "./lib/cache.js";
 import { allCircuitStates } from "./lib/circuit-breaker.js";
 import { getQueueDepth } from "./lib/request-queue.js";
+import { allCooldowns } from "./lib/cooldown.js";
+import { circuitRemainingSeconds } from "./lib/circuit-breaker.js";
+import { getReputationSnapshot } from "./lib/reputation.js";
+import { getSessionStats } from "./lib/usage-tracker.js";
+import { getAllBudgetUsage } from "./lib/budget-tracker.js";
+import { startRetentionScheduler } from "./lib/data-retention.js";
+import { getDatabaseSizes } from "./lib/db.js";
+import { startDashboard } from "./lib/dashboard.js";
 
 const PORT = parseInt(process.env.PORT ?? "8787", 10);
 const SERVER_START_TIME = Date.now();
@@ -410,4 +418,65 @@ server.listen(PORT, "127.0.0.1", () => {
 
   // Sync OpenRouter free model list from live API (no auth required)
   syncOpenRouterModels().catch(() => {});
+
+  // Start data retention scheduler (hourly, archives old data automatically)
+  startRetentionScheduler();
+
+  // Optional web dashboard (DASHBOARD_ENABLED=true) — mirrors the snapshot
+  // shape used by index.js's MCP entry point, so the same dashboard.js
+  // renderer works regardless of which entry point is running.
+  startDashboard(() => {
+    const order = getProviderOrder();
+    const keys = getApiKeys();
+    const cooldownMap = Object.fromEntries(allCooldowns().map((c) => [c.provider, c.remainingSeconds]));
+    const reputationSnapshot = getReputationSnapshot(order);
+    const stats = getSessionStats();
+    const totalCalls = stats.reduce((a, s) => a + s.calls, 0);
+    const totalTokens = stats.reduce((a, s) => a + s.totalTokens, 0);
+    const budgetUsage = Object.fromEntries(getAllBudgetUsage(order).map((b) => [b.provider, b]));
+    const cache = cacheStats();
+    const circuits = allCircuitStates();
+
+    const providers = order.map((name) => {
+      const remaining = cooldownMap[name] ?? 0;
+      const hasKey = Boolean(keys[name]);
+      const cbSecs = circuitRemainingSeconds(name);
+      const entry = PROVIDER_REGISTRY[name];
+      const status = !hasKey
+        ? "no-key"
+        : cbSecs > 0
+        ? `circuit-open (${cbSecs}s)`
+        : remaining > 0
+        ? `cooldown (${remaining}s)`
+        : "active";
+      const rep = reputationSnapshot.find((r) => r.provider === name);
+      const statObj = stats.find((s) => s.provider === name);
+      const budget = budgetUsage[name];
+      return {
+        provider: name,
+        status,
+        reputation: rep?.reputation ?? 70,
+        avgLatencyMs: rep?.benchmark?.avgLatencyMs ?? null,
+        successRate: rep?.benchmark?.successRate ?? null,
+        calls: statObj?.calls ?? 0,
+        defaultModel: entry?.defaultModel ?? null,
+        supportsImages: entry?.supportsImages ?? false,
+        supportsTools: entry?.supportsTools ?? false,
+        supportsStream: entry?.supportsStream ?? false,
+        budget: budget?.limit ? { count: budget.count, limit: budget.limit, window: budget.window } : null,
+      };
+    });
+
+    return {
+      providers,
+      totalCalls,
+      totalTokens,
+      uptimeSeconds: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
+      cache: { entries: cache.size, hitRate: cache.hitRate, hits: cache.hits, misses: cache.misses },
+      circuits: circuits.map((c) => ({ provider: c.provider, state: c.state, remainingSeconds: c.remainingSeconds })),
+      queueDepth: getQueueDepth(),
+      warnings: validateConfig(),
+      recentLog: "(see /v1/health or usage-log.jsonl for raw data)",
+    };
+  });
 });

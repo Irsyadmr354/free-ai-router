@@ -7,7 +7,52 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Added
+---
+
+## [v6.0.0] — 2025-07-06
+
+### Added — Architecture overhaul
+
+- **`lib/db.js`** — Unified SQLite state store using Node.js built-in `node:sqlite` (Node 22+, zero new dependencies). Two databases: `data/router.db` (operational) and `data/conversations.db` (history). Replaces all scattered JSON files and in-memory-only Maps.
+
+- **`lib/mab-routing.js`** — Multi-Armed Bandit (UCB1) provider selection. Replaces the simple reputation sort with a statistically optimal exploration/exploitation algorithm. Reward function: 1.0 (fast success) / 0.8 (normal success) / 0.5 (slow success) / 0.0 (failure). State persisted to `router.db → mab_state`. Configurable via `MAB_ROUTING_ENABLED`, `MAB_EXPLORATION_C`.
+
+- **`lib/anomaly-detector.js`** — Proactive latency spike detection using Exponential Moving Average (EMA) per provider. When latency exceeds `ANOMALY_SPIKE_THRESHOLD` × baseline, provider is deprioritized (not blocked) for `ANOMALY_DEGRADED_TTL_MS`. Auto-recovers after TTL.
+
+- **`lib/prompt-analyzer.js`** — Prompt complexity analysis across 6 dimensions: length, code density, reasoning complexity, creativity, factual/research signals, multilingual content. Provider affinity scores map each dimension to each provider's known strengths. Reorders provider candidates when `PROMPT_ANALYSIS_ROUTING=true`.
+
+- **`lib/semantic-cache.js`** — Semantic similarity cache. On exact cache miss, generates a Gemini embedding and compares cosine similarity against stored embeddings in SQLite. Returns cached response with similarity note when similarity ≥ `SEMANTIC_CACHE_THRESHOLD` (default 0.95). Enable via `SEMANTIC_CACHE_ENABLED=true`.
+
+- **`lib/conversations.js`** — Persistent conversation storage with tiered retention. Saves every exchange to `data/conversations.db`. Auto-transitions: hot (0–7d full text) → warm (7–30d) → cold (30–90d, archived to `data/archive/`) → deleted (>90d). Configurable via `RETENTION_*_DAYS` env vars.
+
+- **`lib/data-retention.js`** — Automated retention scheduler (runs hourly). Prunes benchmark samples older than 7 days, expires cache entries, archives usage log entries older than 90 days to `data/archive/usage_YYYY-MM.jsonl`. Enforces `MAX_ROUTER_DB_MB` hard cap.
+
+- **`lib/middleware.js`** — Composable request pipeline foundation. `createPipeline([...middlewares])` chains async functions with `(context, next)` pattern, enabling features to be added/removed without touching `executeProviderChain`.
+
+- **`lib/benchmark.js`** — Now SQLite-backed (`router.db → benchmark_samples`). In-memory cache layer for read performance; DB is source of truth.
+
+- **`lib/reputation.js`** — Now SQLite-backed (`router.db → provider_state`). Reputation scores survive server restarts.
+
+- **`lib/cooldown.js`** — Now SQLite-backed (`router.db → provider_state`). Replaces `cooldown-state.json` + `cooldown-persist.js`. Cooldown state survives restarts via DB instead of JSON file.
+
+- **`lib/usage-tracker.js`** — Now SQLite-backed (`router.db → usage_log`). Keeps `usage-log.jsonl` as optional back-compat output (`USAGE_LOG_JSONL=false` to disable). Adds `queryUsageHistory()` for programmatic queries. Adds `latency_ms` and `session_id` columns.
+
+- **`reorderProvidersForPrompt()`** in `router-core.js` — combines prompt affinity analysis with budget/anomaly deprioritization.
+
+- MAB outcome recording on every provider call (success + failure paths).
+- Anomaly data point recording on every successful call.
+- Conversation auto-save after every successful response (when `CONVERSATION_STORAGE_ENABLED=true`).
+- Data retention scheduler auto-starts at both `index.js` and `http-server.js` startup.
+
+### Changed
+- `router-core.js` `reorderProviders()` now uses: budget deprioritization → anomaly deprioritization → MAB sort → reputation tiebreaker (replaces: budget → benchmark → reputation).
+- `data/` directory auto-created on startup if it doesn't exist.
+- Version: `5.2.0` → `6.0.0` (major — architecture-level changes)
+- README completely rewritten to reflect current capabilities.
+
+### Removed
+- `lib/cooldown-persist.js` dependency for state persistence (replaced by SQLite).
+
 - `.gitattributes` — `* text=auto eol=lf` to stop LF/CRLF warnings on every commit.
 - `FAIL_ON_INVALID_KEY` env var — when `true`, the server exits at startup if any configured provider's key fails auth (401/403) at the startup health check, instead of silently continuing with a degraded provider chain.
 - Explicit stale-key messaging in the startup health check — 401/403 responses now log `"<PROVIDER>_API_KEY appears expired or revoked (HTTP <status>) — remove or replace it in .env"` instead of a generic error.

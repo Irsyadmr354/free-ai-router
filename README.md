@@ -1,110 +1,138 @@
 # free-ai-router
 
-> An stdio MCP server + OpenAI-compatible HTTP proxy that routes requests across **7 free-tier LLM providers** with automatic fallback, circuit breaker, cooldown tracking, request queuing, response caching, and usage logging — so you never hit a hard stop when one provider's free quota runs out.
+> A personal AI infrastructure layer — MCP server + OpenAI-compatible HTTP proxy that routes requests across **7 free-tier LLM providers** with intelligent adaptive routing, persistent SQLite storage, circuit breakers, semantic caching, and automated data retention.
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/@modelcontextprotocol%2Fsdk-1.29.0-blue)](https://www.npmjs.com/package/@modelcontextprotocol/sdk)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
+[![Version](https://img.shields.io/badge/version-6.0.0-orange)](CHANGELOG.md)
 
 ---
 
-## How it works
+## What it is
 
-When you call `chat_completion`, the server tries providers **sequentially** in this order:
+free-ai-router is a self-hosted AI router that runs on your laptop and acts as the intelligence layer between your tools and free LLM APIs. Instead of picking one provider and hoping it's available, every request goes through a multi-layer decision engine:
 
 ```
-Gemini → Groq → OpenRouter → Cloudflare → Cohere → Mistral → OpenCode Zen
+Request → Prompt Analysis → MAB Routing → Budget/Anomaly Check
+       → Token Saving → Exact Cache → Semantic Cache
+       → Provider Fallback Chain (with Circuit Breaker + Queue)
+       → Persistent Storage → Response
 ```
 
-- **Rate-limit cooldown** — if a provider returns 429, it's put on a 60-second cooldown and the next one is tried immediately. Cooldown state **persists across restarts**.
-- **Circuit breaker** — if a provider returns 5+ non-429 errors within 2 minutes (5xx, timeout), it's blocked for 5 minutes, then probed with one test request before being restored.
-- **Request queue** — if ALL providers are on cooldown/circuit-open, the request waits up to 30s for the soonest one to recover, then retries automatically instead of immediately failing.
-- **Model fallback** — within a single provider, if the default model fails, other chat-capable models are tried before moving to the next provider. Non-chat models (Whisper, prompt-guard) are never tried for chat requests.
-- **Response cache** — identical prompts are cached for 5 minutes, skipping all provider calls.
-- **Live model sync** — on startup, free models are fetched live from OpenRouter's API (25+ models) and OpenCode Zen's API (5 models). No manual updates needed when they add/remove models.
-- **Usage log** — every successful call is logged to `usage-log.jsonl` with token counts.
+Everything is stored locally in SQLite with automated retention — no data leaves your machine except the actual LLM API calls.
 
-Each response is prefixed with `[served by: provider/model]` so you always see which backend handled the request.
+---
+
+## How routing works
+
+### Provider selection (in order of priority)
+1. **Exact cache** — identical prompt? Return cached response instantly, no API call
+2. **Semantic cache** — similar prompt (≥95% cosine similarity)? Return approximate match
+3. **MAB routing** — UCB1 multi-armed bandit algorithm picks the statistically best provider based on reward history, not just latency
+4. **Anomaly detection** — provider with 3× latency spike? Deprioritized automatically
+5. **Budget awareness** — approaching free tier limit? Move to end of order
+6. **Circuit breaker** — 5+ failures in 2 minutes? Block for 5 minutes, probe once to recover
+7. **Rate-limit cooldown** — 429 response? 60-second cooldown
+8. **Request queue** — all providers unavailable? Wait up to 30s for first recovery, then retry
+
+### Token saving (reduces input token count automatically)
+- **Tier 0** (always on): whitespace normalization, JSON/CSS minification
+- **Tier 1** (always on): context window trimming, duplicate block deduplication
+- **Tier 2** (opt-in): abbreviation dictionary with ROI check
+- **Tier 3** (opt-in explicit): LLM-based summarization for very long contexts
 
 ---
 
 ## Providers & Free Tiers
 
-All providers confirmed permanently free — no credit card required, no expiry.
+All confirmed permanently free — no credit card, no expiry.
 
-| Provider | Default Model | Free Limit | Notes |
-|---|---|---|---|
-| [Google Gemini](https://aistudio.google.com/apikey) | gemini-2.5-flash | 1,500 req/day | |
-| [Groq](https://console.groq.com/keys) | llama-3.3-70b-versatile | 14,400 req/day | 10 chat models |
-| [OpenRouter](https://openrouter.ai/keys) | openrouter/free | Unlimited | 25+ `:free` models, auto-synced |
-| [Cloudflare Workers AI](https://dash.cloudflare.com/profile/api-tokens) | llama-3.3-70b-fp8 | 10,000 neurons/day | Hard cap — no charge if exceeded |
-| [Cohere](https://dashboard.cohere.com/api-keys) | command-r-plus-08-2024 | 1,000 req/month | Trial key, no CC |
-| [Mistral](https://console.mistral.ai/api-keys) | mistral-small-latest | Free mode | No CC required |
-| [OpenCode Zen](https://opencode.ai/settings/api-keys) | deepseek-v4-flash-free | Limited time | 5 free models, auto-synced |
-
-> **Removed providers:** SambaNova ($5 credit expires in 3 months → pay-per-use after) and Together AI (free tier removed).
+| Provider | Default Model | Free Limit |
+|---|---|---|
+| [Google Gemini](https://aistudio.google.com/apikey) | gemini-2.5-flash | 1,500 req/day |
+| [Groq](https://console.groq.com/keys) | llama-3.3-70b-versatile | 14,400 req/day |
+| [OpenRouter](https://openrouter.ai/keys) | openrouter/free | Unlimited (25+ `:free` models, live-synced) |
+| [Cloudflare Workers AI](https://dash.cloudflare.com/profile/api-tokens) | llama-3.3-70b-fp8 | 10,000 neurons/day (hard cap, no charge if exceeded) |
+| [Cohere](https://dashboard.cohere.com/api-keys) | command-r-plus-08-2024 | 1,000 req/month |
+| [Mistral](https://console.mistral.ai/api-keys) | mistral-small-latest | Free mode (no CC) |
+| [OpenCode Zen](https://opencode.ai/settings/api-keys) | deepseek-v4-flash-free | 5 free models (limited time, live-synced) |
 
 ---
 
-## MCP Tools (17)
+## MCP Tools (19)
 
 | Tool | Description |
 |---|---|
-| `chat_completion` | Send a prompt, get a response from the first available provider |
-| `list_providers` | Status, cooldown, circuit breaker, budget, and models for all providers |
-| `embed_text` | Generate embedding vectors (Gemini or OpenRouter) |
-| `count_tokens` | Estimate token count without making an API call |
-| `ping_providers` | Live health-check all providers with latency |
-| `get_usage_stats` | Session token/call stats + cache + budget info |
-| `set_provider_order` | Change fallback order at runtime without restarting |
-| `clear_cache` | Manually flush the in-memory response cache |
-| `compare_providers` | Send same prompt to all providers, compare side-by-side |
-| `get_benchmarks` | Average/p95 latency and success rate per provider |
-| `chat_with_template` | Run a saved prompt template from `./templates/*.md` |
-| `summarize_usage_log` | Aggregate `usage-log.jsonl` by day/week/provider |
-| `export_usage_report` | Generate Markdown or CSV usage report |
-| `translate` | Translate text using a free LLM (no DeepL/Google Translate needed) |
-| `summarize` | Summarize text with tuned prompt (bullet/paragraph/tldr) |
-| `code_review` | Review code for security/performance/readability |
-| `get_reputation` | Provider reputation scores used for auto-reordering |
+| `chat_completion` | Full provider fallback chain with all intelligence layers |
+| `list_providers` | Status, cooldown, circuit breaker, MAB scores, anomaly state |
+| `embed_text` | Embedding vectors (Gemini or OpenRouter) |
+| `count_tokens` | Estimate tokens without API call |
+| `ping_providers` | Live health check with latency |
+| `get_usage_stats` | Session token/call stats + cache + budget |
+| `set_provider_order` | Change fallback order at runtime |
+| `clear_cache` | Flush response cache |
+| `compare_providers` | Same prompt → all providers, side-by-side |
+| `get_benchmarks` | Latency/success rate per provider |
+| `chat_with_template` | Run `./templates/*.md` prompt templates |
+| `summarize_usage_log` | Aggregate usage history |
+| `export_usage_report` | Markdown or CSV usage report |
+| `translate` | Translate text via free LLM |
+| `summarize` | Summarize text with tuned prompt |
+| `code_review` | Code review with security/performance/readability focus |
+| `get_reputation` | Provider reputation scores (0-100) |
+| `get_server_health` | Uptime, cache hit rate, circuit states, queue depth |
+| `get_token_savings_report` | Aggregated token savings by tier |
 
 ---
 
 ## Two ways to use
 
-### 1. MCP Server (stdio) — for OpenCode, Claude Desktop, etc.
-
-Registered as a tool provider in your MCP client. The AI calls `chat_completion` automatically when it wants free inference.
+### 1. MCP Server (stdio) — for OpenCode, Claude Desktop, Kiro, etc.
 
 ```bash
 npm start
 ```
 
-### 2. HTTP Proxy (OpenAI-compatible) — for IDEs and CLI tools
+Add to your MCP config — see [OpenCode setup](#add-to-opencode-mcp-config) below.
 
-Exposes `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/health` on `localhost:8787`. Point any tool that supports a custom OpenAI base URL at `http://localhost:8787/v1`.
+### 2. HTTP Proxy (OpenAI-compatible) — for IDEs and CLI tools
 
 ```bash
 npm run start:http
+# → http://localhost:8787/v1
 ```
 
-See [IDE_SETUP.md](IDE_SETUP.md) for per-tool setup (Cursor, Kiro, opencode, Claude Code, etc.).
+Point any tool with an "OpenAI base URL" setting at `http://localhost:8787/v1`. See [IDE_SETUP.md](IDE_SETUP.md) for Cursor, Kiro, opencode, Claude Code.
+
+---
+
+## Storage
+
+All state is persisted to SQLite in `./data/`:
+
+```
+data/
+├── router.db          ← operational state: cooldowns, reputation, MAB scores,
+│                         circuit breakers, benchmark samples, response cache,
+│                         usage log, semantic cache embeddings
+├── conversations.db   ← conversation history with tiered retention
+└── archive/           ← auto-generated monthly archives (JSONL)
+```
+
+**Storage footprint:** ~18MB after 1 year of typical personal use. The retention system automatically:
+- Keeps full conversation text for 30 days
+- Archives to `data/archive/` after 30 days, deletes from DB after 90 days
+- Prunes benchmark samples older than 7 days
+- Archives usage log entries older than 90 days
 
 ---
 
 ## Installation
 
 ### Prerequisites
-
-- **Node.js v18+** — check with `node --version`
-- **npm** — comes with Node.js
-
-If you don't have Node.js:
-- **Windows / macOS**: Download from https://nodejs.org (LTS version)
-- **Linux (Ubuntu/Debian)**: `sudo apt install nodejs npm`
-- **Linux (via nvm, recommended)**: https://github.com/nvm-sh/nvm
-
-### Clone & install
+- **Node.js v22+** (uses built-in `node:sqlite`)
+- **npm**
 
 ```bash
 git clone https://github.com/Irsyadmr354/free-ai-router.git
@@ -112,58 +140,37 @@ cd free-ai-router
 npm install
 ```
 
----
+### Configure API Keys
 
-## Configure API Keys
-
-Copy the example env file and fill in your keys:
-
-**macOS / Linux:**
 ```bash
+# macOS/Linux
 cp .env.example .env
-```
 
-**Windows (CMD):**
-```cmd
+# Windows
 copy .env.example .env
 ```
 
-**Windows (PowerShell):**
-```powershell
-Copy-Item .env.example .env
-```
-
-Then open `.env` and fill in at least one key:
+Fill in at least one key:
 
 ```env
 GEMINI_API_KEY=        # https://aistudio.google.com/apikey
 GROQ_API_KEY=          # https://console.groq.com/keys
 OPENROUTER_API_KEY=    # https://openrouter.ai/keys
 CLOUDFLARE_API_TOKEN=  # https://dash.cloudflare.com/profile/api-tokens
-CLOUDFLARE_ACCOUNT_ID= # shown in your Cloudflare dashboard URL
+CLOUDFLARE_ACCOUNT_ID= # from your Cloudflare dashboard URL
 COHERE_API_KEY=        # https://dashboard.cohere.com/api-keys
 MISTRAL_API_KEY=       # https://console.mistral.ai/api-keys
 OPENCODE_API_KEY=      # https://opencode.ai/settings/api-keys
 ```
 
-Providers with no key configured are **silently skipped**. You don't need all 7.
-
 ---
 
 ## Add to OpenCode (MCP config)
 
-Open your OpenCode MCP configuration file and add:
-
-> **Find your config file:**
-> - **macOS / Linux**: `~/.config/opencode/config.json`
-> - **Windows**: `%APPDATA%\opencode\config.json`
-> - Or: Command Palette → "Open MCP Config"
-
-### macOS / Linux
-
+**macOS / Linux:**
 ```bash
 which node   # e.g. /usr/local/bin/node
-pwd          # run inside the free-ai-router folder
+pwd          # run inside free-ai-router folder
 ```
 
 ```json
@@ -178,8 +185,7 @@ pwd          # run inside the free-ai-router folder
 }
 ```
 
-### Windows
-
+**Windows:**
 ```json
 {
   "mcpServers": {
@@ -192,63 +198,47 @@ pwd          # run inside the free-ai-router folder
 }
 ```
 
-> Use double backslashes `\\` in JSON on Windows.
-
 ---
 
-## Optional Tuning (`.env`)
+## Key Configuration
 
 ```env
-# Fallback order (or use set_provider_order tool at runtime)
-PROVIDER_ORDER=gemini,groq,openrouter,cloudflare,cohere,mistral,opencode-zen
+# Routing intelligence
+MAB_ROUTING_ENABLED=true           # UCB1 multi-armed bandit (default: true)
+PROMPT_ANALYSIS_ROUTING=true       # Prompt complexity → provider affinity (default: false)
+ANOMALY_DETECTION_ENABLED=true     # Auto-deprioritize latency spikes (default: true)
+ANOMALY_SPIKE_THRESHOLD=3.0        # Latency spike = 3x baseline (default: 3.0)
 
-# Per-provider timeouts in ms (default: 15000)
-TIMEOUT_GROQ_MS=10000
+# Semantic cache
+SEMANTIC_CACHE_ENABLED=true        # Cosine similarity cache (default: false, needs Gemini key)
+SEMANTIC_CACHE_THRESHOLD=0.95      # Similarity threshold (default: 0.95)
 
-# Rate-limit cooldown window (default: 60s)
-PROVIDER_COOLDOWN_MS=60000
+# Conversation storage
+CONVERSATION_STORAGE_ENABLED=true  # Persist conversation history (default: true)
 
-# Circuit breaker — opens after N failures in WINDOW_MS, recovers after RECOVERY_MS
-CIRCUIT_BREAKER_ENABLED=true
-CIRCUIT_FAILURE_THRESHOLD=5
-CIRCUIT_WINDOW_MS=120000
-CIRCUIT_RECOVERY_MS=300000
+# Data retention
+RETENTION_HOT_DAYS=7               # Full text retention (default: 7)
+RETENTION_WARM_DAYS=30             # Archive after (default: 30)
+RETENTION_COLD_DAYS=90             # Delete from DB after (default: 90)
+MAX_ROUTER_DB_MB=100               # Hard size cap for router.db (default: 100MB)
 
-# Request queue — max wait when all providers unavailable (default: 30s)
-REQUEST_QUEUE_ENABLED=true
-REQUEST_QUEUE_TIMEOUT_MS=30000
-
-# Response cache TTL (default: 5min)
-CACHE_TTL_MS=300000
-CACHE_ENABLED=true
-
-# Discord webhook — notified when ALL providers fail simultaneously
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-
-# HTTP proxy port (default: 8787)
-PORT=8787
+# Token saving
+TOKEN_SAVING_ENABLED=true          # Tier 0+1 always on (default: true)
+CONTEXT_TRIM_THRESHOLD_TOKENS=8000 # Trigger context trimming above (default: 8000)
 ```
+
+See `.env.example` for the full list.
 
 ---
 
-## Test manually
+## Test
 
 ```bash
 node test-call.js
 ```
 
-Expected output:
-```
-[free-ai-router] MCP server v4.0.0 started (stdio transport)
-[free-ai-router] OpenRouter: synced 25 free models from live API
-[free-ai-router] Running startup health check for: gemini, groq, ...
-[free-ai-router] ✅ gemini ready — 432ms
-...
-=== TOOL RESULT ===
-[served by: gemini/gemini-2.5-flash]
-
-Hello!
-===================
+```bash
+npm run check   # syntax check all 48 files
 ```
 
 ---
@@ -257,60 +247,30 @@ Hello!
 
 ```
 free-ai-router/
-├── index.js                 # MCP server + 17 tool handlers
-├── http-server.js           # OpenAI-compatible HTTP proxy (npm run start:http)
-├── providers/
-│   ├── gemini.js            # Google Gemini (+ embeddings)
-│   ├── groq.js              # Groq (CHAT_MODELS whitelist separates chat from STT/TTS)
-│   ├── openrouter.js        # OpenRouter (+ live free model sync + embeddings)
-│   ├── cloudflare.js        # Cloudflare Workers AI
-│   ├── cohere.js            # Cohere
-│   ├── mistral.js           # Mistral AI
-│   └── opencode-zen.js      # OpenCode Zen (+ live free model sync)
+├── index.js                    MCP server + 19 tool handlers
+├── http-server.js              OpenAI-compatible HTTP proxy
+├── data/                       SQLite databases (auto-created)
+├── providers/                  7 provider modules
 └── lib/
-    ├── router-core.js       # Shared fallback chain (used by both entry points)
-    ├── circuit-breaker.js   # CLOSED/OPEN/HALF_OPEN circuit breaker per provider
-    ├── request-queue.js     # Queue requests when all providers temporarily unavailable
-    ├── cooldown.js          # Rate-limit (429) cooldown tracker — persisted to disk
-    ├── cooldown-persist.js  # Cooldown state persistence across restarts
-    ├── cache.js             # In-memory response cache
-    ├── dedup.js             # Request deduplication for concurrent identical calls
-    ├── benchmark.js         # Latency + success rate tracking per provider
-    ├── reputation.js        # Dynamic provider reputation scoring
-    ├── budget-tracker.js    # Free-tier request budget tracking
-    ├── config.js            # All env var configuration
-    ├── normalize.js         # Shared response/error shapes
-    ├── logger.js            # Stderr-only logger
-    ├── notifier.js          # Discord webhook notifications
-    ├── sanitize.js          # Input sanitization (null bytes, API key redaction)
-    ├── quality-score.js     # Response quality scoring
-    ├── lang-detect.js       # Prompt language detection
-    ├── chunk.js             # Long-context auto-chunking
-    ├── templates.js         # Prompt template loader
-    ├── report.js            # Usage report generator
-    ├── usage-tracker.js     # Token usage log (usage-log.jsonl)
-    ├── tracing.js           # OpenTelemetry-style tracing
-    ├── warmup.js            # Background provider warm-up pool
-    └── dashboard.js         # Web dashboard (DASHBOARD_ENABLED=true)
+    ├── router-core.js          Shared fallback chain
+    ├── db.js                   SQLite unified state store
+    ├── middleware.js            Composable request pipeline
+    ├── mab-routing.js          UCB1 multi-armed bandit routing
+    ├── anomaly-detector.js     Proactive latency spike detection
+    ├── prompt-analyzer.js      Prompt complexity + provider affinity
+    ├── semantic-cache.js       Cosine similarity response cache
+    ├── conversations.js        Persistent conversation storage
+    ├── data-retention.js       Automated tiered retention scheduler
+    ├── circuit-breaker.js      CLOSED/OPEN/HALF_OPEN per provider
+    ├── request-queue.js        Queue when all providers unavailable
+    ├── token-saver.js          4-tier token saving pipeline
+    ├── benchmark.js            Latency tracking (SQLite-backed)
+    ├── reputation.js           0-100 scores (SQLite-backed)
+    ├── cooldown.js             429 cooldown (SQLite-backed)
+    ├── cache.js                Exact-match response cache
+    ├── budget-tracker.js       Free-tier budget tracking
+    └── ...                     12 more utility modules
 ```
-
----
-
-## Troubleshooting
-
-**`Error: Cannot find module`** → Run `npm install` in the project folder.
-
-**Provider shows ❌ at startup** → Check the key in `.env` (no extra spaces or quotes around the value).
-
-**All providers show `no-key`** → Make sure `.env` exists in the project root. Run `cp .env.example .env` and fill it in.
-
-**OpenCode doesn't see the tools** → Verify the `node` and `index.js` paths in your MCP config are absolute and correct for your OS. Restart OpenCode after saving.
-
-**Windows — `node` not found** → Run `where node` in CMD/PowerShell to get the full path.
-
-**macOS/Linux — `node` not found** → Run `which node` to get the full path.
-
-**HTTP proxy not working** → Make sure you ran `npm run start:http` (not `npm start`). Check `http://localhost:8787/v1/health` for diagnostics.
 
 ---
 
