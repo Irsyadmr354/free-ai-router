@@ -13,7 +13,7 @@
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
-import { getTimeout } from "../lib/config.js";
+import { getTimeout, getStreamTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
 import { log, logError } from "../lib/logger.js";
 
@@ -180,7 +180,8 @@ export async function streamOpenCodeZen({ prompt, systemPrompt, maxTokens, tempe
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), getTimeout("opencode-zen"));
+  const streamTimeoutMs = getStreamTimeout("opencode-zen");
+  const timeoutId = setTimeout(() => controller.abort(), streamTimeoutMs);
   if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
 
   const startedAt = Date.now();
@@ -198,7 +199,7 @@ export async function streamOpenCodeZen({ prompt, systemPrompt, maxTokens, tempe
   } catch (err) {
     clearTimeout(timeoutId);
     const msg = err.name === "AbortError"
-      ? "Request timed out after " + getTimeout("opencode-zen") + "ms"
+      ? "Request timed out after " + streamTimeoutMs + "ms"
       : String(err.message);
     throw new ProviderError(`OpenCode Zen network/timeout error: ${msg}`, null, "opencode-zen", msg);
   } finally {

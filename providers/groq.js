@@ -13,7 +13,7 @@
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
-import { getTimeout } from "../lib/config.js";
+import { getTimeout, getStreamTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
 
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
@@ -183,7 +183,8 @@ export async function streamGroq({ prompt, systemPrompt, maxTokens, temperature,
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), getTimeout("groq"));
+  const streamTimeoutMs = getStreamTimeout("groq");
+  const timeoutId = setTimeout(() => controller.abort(), streamTimeoutMs);
   if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
 
   const startedAt = Date.now();
@@ -197,7 +198,7 @@ export async function streamGroq({ prompt, systemPrompt, maxTokens, temperature,
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    const msg = err.name === "AbortError" ? "Request timed out after " + getTimeout("groq") + "ms" : String(err.message);
+    const msg = err.name === "AbortError" ? "Request timed out after " + streamTimeoutMs + "ms" : String(err.message);
     throw new ProviderError(`Groq network/timeout error: ${msg}`, null, "groq", msg);
   } finally {
     clearTimeout(timeoutId);

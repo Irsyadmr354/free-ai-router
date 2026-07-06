@@ -8,7 +8,7 @@
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
-import { getTimeout } from "../lib/config.js";
+import { getTimeout, getStreamTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
 
 const ENDPOINT = "https://api.mistral.ai/v1/chat/completions";
@@ -139,7 +139,8 @@ export async function streamMistral({ prompt, systemPrompt, maxTokens, temperatu
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), getTimeout("mistral"));
+  const streamTimeoutMs = getStreamTimeout("mistral");
+  const timeoutId = setTimeout(() => controller.abort(), streamTimeoutMs);
   if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
 
   const startedAt = Date.now();
@@ -156,7 +157,7 @@ export async function streamMistral({ prompt, systemPrompt, maxTokens, temperatu
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    const msg = err.name === "AbortError" ? "Request timed out after " + getTimeout("mistral") + "ms" : String(err.message);
+    const msg = err.name === "AbortError" ? "Request timed out after " + streamTimeoutMs + "ms" : String(err.message);
     throw new ProviderError(`Mistral network/timeout error: ${msg}`, null, "mistral", msg);
   } finally {
     clearTimeout(timeoutId);

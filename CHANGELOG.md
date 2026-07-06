@@ -7,11 +7,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `.gitattributes` — `* text=auto eol=lf` to stop LF/CRLF warnings on every commit.
+- `FAIL_ON_INVALID_KEY` env var — when `true`, the server exits at startup if any configured provider's key fails auth (401/403) at the startup health check, instead of silently continuing with a degraded provider chain.
+- Explicit stale-key messaging in the startup health check — 401/403 responses now log `"<PROVIDER>_API_KEY appears expired or revoked (HTTP <status>) — remove or replace it in .env"` instead of a generic error.
+- `/v1/health` now reports: `uptimeSeconds`, `requests` (total + per-endpoint counters), `cache` (size/enabled/hits/misses/hitRate), `queueDepth`, and `circuits` (per-provider circuit breaker state).
+- Cache hit/miss counters in `lib/cache.js` (`cacheStats()` now returns `hits`, `misses`, `hitRate`), feeding the new `/v1/health` reporting.
+
 ### Planned
-- `.gitattributes` for consistent LF line endings across OS
-- `FAIL_ON_INVALID_KEY` env var — exit on startup if all keys fail auth
 - Stale Discord notification when a provider recovers from circuit-open
-- `/v1/health` endpoint enhancements (uptime, request count, cache hit rate, queue depth)
 - `npm run check` syntax-check script
 - `compare_providers` tool: add `tools` parameter support
 - Automatic model deprecation detection (alert when OpenRouter free model count drops)

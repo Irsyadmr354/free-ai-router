@@ -12,7 +12,7 @@
  */
 
 import { normalizeSuccess, normalizeEmbedding, ProviderError } from "../lib/normalize.js";
-import { getTimeout } from "../lib/config.js";
+import { getTimeout, getStreamTimeout } from "../lib/config.js";
 import { consumeOpenAiSse } from "../lib/sse.js";
 import { log, logError } from "../lib/logger.js";
 
@@ -34,6 +34,30 @@ const HARDCODED_FREE_MODELS = [
 export let SUPPORTED_MODELS = [...HARDCODED_FREE_MODELS];
 
 let syncedOpenRouter = false;
+
+async function notifyModelDeprecation(previousCount, currentCount) {
+  const url = process.env.DISCORD_WEBHOOK_URL;
+  if (!url) return;
+  const payload = {
+    username: "free-ai-router",
+    embeds: [{
+      title: "⚠️ OpenRouter free model count dropped",
+      description: `Free model count fell from ${previousCount} to ${currentCount} after a resync — OpenRouter may have deprecated or repriced some models. Check https://openrouter.ai/models?max_price=0 if fallback chain reliability drops.`,
+      color: 0xffaa00,
+      timestamp: new Date().toISOString(),
+    }],
+  };
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    // best-effort only
+  }
+}
 
 /**
  * Fetch the live model list from OpenRouter and update SUPPORTED_MODELS with
@@ -62,6 +86,20 @@ export async function syncFreeModels() {
       .filter((id) => id && id !== "openrouter/free"); // dedupe the special router
 
     if (freeModels.length > 0) {
+      // Detect a significant drop in free model count vs the previous synced
+      // list (excluding the special "openrouter/free" router entry itself) —
+      // could indicate OpenRouter deprecating/removing free models, which
+      // would silently shrink the router's fallback options.
+      const previousCount = SUPPORTED_MODELS.filter((m) => m !== "openrouter/free").length;
+      if (previousCount > 0) {
+        const dropRatio = (previousCount - freeModels.length) / previousCount;
+        if (dropRatio > 0.2) {
+          const msg = `OpenRouter: free model count dropped ${(dropRatio * 100).toFixed(0)}% (${previousCount} → ${freeModels.length}) — possible model deprecation`;
+          logError(msg);
+          notifyModelDeprecation(previousCount, freeModels.length).catch(() => {});
+        }
+      }
+
       // Always keep openrouter/free first as the default catch-all
       SUPPORTED_MODELS = ["openrouter/free", ...freeModels];
       log(`OpenRouter: synced ${freeModels.length} free models from live API`);
@@ -154,11 +192,21 @@ export async function callOpenRouter({ prompt, systemPrompt, maxTokens, temperat
   }
 
   const data = await response.json();
-  const message = data?.choices?.[0]?.message;
-  const text = message?.content;
+  const choice = data?.choices?.[0];
+  const message = choice?.message;
   const toolCalls = message?.tool_calls;
-  if (typeof text !== "string" && !toolCalls?.length) {
-    throw new ProviderError("OpenRouter response missing expected text field", response.status, "openrouter", JSON.stringify(data).slice(0, 500));
+  // Some upstream OpenRouter models (esp. via the "openrouter/free" router,
+  // which can land on providers like Poolside) return content as `null`
+  // instead of an empty string when the response was filtered/refused, or
+  // omit `message` entirely on certain finish_reasons. Treat those as an
+  // empty completion rather than a hard parse failure — only truly missing
+  // `choices`/`message` structure (i.e. broken response shape) is fatal.
+  const text = typeof message?.content === "string" ? message.content : "";
+  if (!choice || (message === undefined)) {
+    throw new ProviderError("OpenRouter response missing expected message field", response.status, "openrouter", JSON.stringify(data).slice(0, 500));
+  }
+  if (!text && !toolCalls?.length) {
+    throw new ProviderError(`OpenRouter response had no text or tool calls (finish_reason: ${choice?.finish_reason ?? "unknown"})`, response.status, "openrouter", JSON.stringify(data).slice(0, 500));
   }
 
   // OpenRouter returns the actual model used (may differ from requested when using "auto")
@@ -199,7 +247,8 @@ export async function streamOpenRouter({ prompt, systemPrompt, maxTokens, temper
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), getTimeout("openrouter"));
+  const streamTimeoutMs = getStreamTimeout("openrouter");
+  const timeoutId = setTimeout(() => controller.abort(), streamTimeoutMs);
   if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
 
   const startedAt = Date.now();
@@ -213,7 +262,7 @@ export async function streamOpenRouter({ prompt, systemPrompt, maxTokens, temper
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    const msg = err.name === "AbortError" ? "Request timed out after " + getTimeout("openrouter") + "ms" : String(err.message);
+    const msg = err.name === "AbortError" ? "Request timed out after " + streamTimeoutMs + "ms" : String(err.message);
     throw new ProviderError(`OpenRouter network/timeout error: ${msg}`, null, "openrouter", msg);
   } finally {
     clearTimeout(timeoutId);

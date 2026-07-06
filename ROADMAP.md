@@ -1,7 +1,7 @@
 # free-ai-router — Roadmap
 
 Status implementasi semua fitur yang pernah diidentifikasi.
-Update terakhir: 2025-07-06 (setelah v5.0.0).
+Update terakhir: 2026-07-06 (setelah v5.1.0 — audit menyeluruh + backlog lengkap).
 
 ---
 
@@ -71,40 +71,26 @@ Update terakhir: 2025-07-06 (setelah v5.0.0).
 - ✅ Fix tool-calling bugs (Gemini $schema, Groq 128-tool cap)
 - ✅ Fix opencode.json model ID
 
+### v5.1.0 (backlog lengkap diselesaikan)
+- ✅ **`MAX_RETRIES_PER_PROVIDER`** — batasi berapa model dalam satu provider yang dicoba sebelum lompat ke provider berikutnya.
+- ✅ **Webhook saat provider pulih** — Discord notif saat circuit breaker HALF_OPEN probe berhasil (kembali ke CLOSED), terpisah dari notif "semua gagal".
+- ✅ **`tools` di `compare_providers`** — evaluasi tool calling antar provider side-by-side, provider tanpa dukungan tools di-skip dengan catatan.
+- ✅ **Automatic model deprecation detection** — warning + Discord notif kalau jumlah free model OpenRouter turun >20% setelah resync.
+- ✅ **`npm run check`** — `node --check` semua `.js` file via `scripts/check-syntax.js`, bisa jadi pre-commit hook lokal.
+- ✅ **`show_all_models` di `list_providers`** — default hanya chat-capable models, `show_all_models: true` untuk full catalog.
+- ✅ **`get_server_health` MCP tool** — uptime, cache, queue, circuit breaker states, setara `/v1/health` tapi via MCP.
+- ✅ **`openapi.yaml`** — spec lengkap untuk `http-server.js`, siap untuk IDE autocomplete / Postman / Insomnia import.
+- ✅ **`npx`-able** — `package.json` diperbarui (bin ganda, publishConfig, repository, keywords) siap `npm publish`.
+- ✅ **Vercel AI SDK compatibility** — `x-vercel-ai-data-stream` response header saat diminta via header/query param.
+- ✅ **Semantic model routing** — `task_type: "code" | "chat" | "math"` parameter di `chat_completion`, reorder model candidates dalam provider berdasarkan heuristik nama model.
+- ✅ **Per-provider streaming timeout** — `getStreamTimeout()` terpisah dari timeout non-streaming, default 2x lipat (bisa dikonfigurasi), diterapkan ke semua provider streaming (Groq, OpenRouter, Cohere, Mistral, OpenCode Zen).
+
 ---
 
 ## Backlog — Belum diimplementasi
 
-### 🔴 High priority
-
-| # | Fitur | Deskripsi |
-|---|---|---|
-| 1 | **`.gitattributes`** | `* text=auto eol=lf` — fix LF/CRLF warning di setiap commit. 5 menit, fix selamanya. |
-| 2 | **`FAIL_ON_INVALID_KEY`** | Env var: kalau aktif dan semua key fail auth di startup, server exit dengan error jelas daripada diam-diam berjalan tanpa provider. |
-| 3 | **`/v1/health` yang lebih informatif** | Tambah: uptime, total requests served, cache hit rate, queue depth, circuit states — jadi monitoring endpoint yang serius. |
-| 4 | **Automatic stale key detection** | Startup health check sudah log ❌ untuk auth failure. Tambah warning yang lebih eksplisit: "GEMINI_API_KEY appears expired or revoked — remove or replace it" daripada generic error. |
-
-### 🟡 Medium priority
-
-| # | Fitur | Deskripsi |
-|---|---|---|
-| 5 | **Per-provider retry budget** | `MAX_RETRIES_PER_PROVIDER=2` — batasi berapa model dalam satu provider yang boleh dicoba sebelum langsung lompat ke provider berikutnya. |
-| 6 | **Webhook saat provider pulih** | Discord notif bukan hanya saat semua gagal, tapi juga saat provider pulih setelah circuit breaker half-open probe berhasil. |
-| 7 | **`tools` di `compare_providers`** | Sekarang `compare_providers` tidak support tool calling. Tambah parameter `tools` untuk evaluasi tool calling antar provider. |
-| 8 | **Automatic model deprecation detection** | Kalau setelah sync ulang jumlah free model OpenRouter turun signifikan (>20%), log warning + Discord notif. |
-| 9 | **`npm run check` script** | `node --check` semua `.js` files sekaligus. Bisa jadi pre-commit hook lokal. |
-
-### 🟢 Nice to have
-
-| # | Fitur | Deskripsi |
-|---|---|---|
-| 10 | **`show_all_models` parameter di `list_providers`** | Default hanya tampilkan chat-capable models, bukan full catalog termasuk Whisper dll. |
-| 11 | **`get_server_health` MCP tool** | Sama dengan `/v1/health` tapi accessible via MCP tool — uptime, requests, cache, queue, circuit states. |
-| 12 | **OpenAPI spec** | `openapi.yaml` untuk `http-server.js` — IDE autocomplete, Postman/Insomnia import. |
-| 13 | **`npx`-able** | Publish ke npm, orang bisa langsung `npx free-ai-router`. |
-| 14 | **Vercel AI SDK compatibility** | `x-vercel-ai-data-stream` header support di HTTP proxy. |
-| 15 | **Semantic model routing** | `task_type: "code" | "chat" | "math"` parameter — route otomatis ke model yang paling cocok untuk task tersebut. |
-| 16 | **Per-provider streaming timeout** | Timeout terpisah untuk streaming vs non-streaming — streaming butuh toleransi lebih lama untuk first chunk. |
+Tidak ada. Semua item dari audit sebelumnya (#1-16) sudah diimplementasikan per v5.1.0.
+Item baru dari audit selanjutnya akan ditambahkan di sini.
 
 ---
 

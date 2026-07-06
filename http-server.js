@@ -45,8 +45,15 @@ import { PROVIDER_REGISTRY, reorderProviders, executeProviderChain, buildReason 
 import { forwardStream } from "./lib/sse-forward.js";
 import { syncModels as syncOpenCodeZenModels } from "./providers/opencode-zen.js";
 import { syncFreeModels as syncOpenRouterModels } from "./providers/openrouter.js";
+import { cacheStats } from "./lib/cache.js";
+import { allCircuitStates } from "./lib/circuit-breaker.js";
+import { getQueueDepth } from "./lib/request-queue.js";
 
 const PORT = parseInt(process.env.PORT ?? "8787", 10);
+const SERVER_START_TIME = Date.now();
+
+// Total requests served, broken down by endpoint — for /v1/health reporting.
+const requestCounters = { total: 0, chatCompletions: 0, models: 0, health: 0 };
 
 // ---------------------------------------------------------------------------
 // Helpers shared by both the streaming and non-streaming request paths
@@ -158,7 +165,8 @@ async function handleChatCompletions(req, res) {
 
   const {
     model, messages, stream = false, providers, tools, tool_choice,
-    response_format, session_id,
+    response_format, session_id, task_type,
+    allow_lossy_summarization = false, abbreviation_dictionary,
   } = body;
 
   if (!Array.isArray(messages) || !messages.length) {
@@ -191,15 +199,26 @@ async function handleChatCompletions(req, res) {
   const created = Math.floor(Date.now() / 1000);
 
   if (stream) {
+    // Vercel AI SDK clients (useChat/useCompletion) may send this header, or
+    // request it explicitly via ?vercel_ai_data_stream=1, to get the
+    // x-vercel-ai-data-stream response header alongside our OpenAI-compatible
+    // SSE chunks (see lib/sse-forward.js for details).
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const vercelAiDataStream = req.headers["x-vercel-ai-data-stream"] !== undefined
+      || url.searchParams.get("vercel_ai_data_stream") === "1";
+
     // True SSE forwarding — no collect-all-then-return.
     return forwardStream(res, req, {
       id,
       model: model ?? "free-ai-router",
+      vercelAiDataStream,
       source: async ({ onDelta, abortSignal }) => {
         const result = await executeProviderChain({
           order, keys, model, params, tools, tool_choice,
           response_format: responseFormatValue, hasImage, session_id,
-          sanitizeNote, onDelta, abortSignal,
+          sanitizeNote, onDelta, abortSignal, task_type,
+          allowLossySummarization: allow_lossy_summarization,
+          abbreviationDictionary: abbreviation_dictionary,
         });
         return { model: `${result.provider}/${result.model}` };
       },
@@ -224,7 +243,9 @@ async function handleChatCompletions(req, res) {
     if (!result) {
       const runOnce = () => executeProviderChain({
         order, keys, model, params, tools, tool_choice,
-        response_format: responseFormatValue, hasImage, session_id, sanitizeNote,
+        response_format: responseFormatValue, hasImage, session_id, sanitizeNote, task_type,
+        allowLossySummarization: allow_lossy_summarization,
+        abbreviationDictionary: abbreviation_dictionary,
       });
       result = skipCache ? await runOnce() : await dedupe(cacheKey, runOnce);
       if (!skipCache) cacheSet(cacheKey, result);
@@ -233,7 +254,8 @@ async function handleChatCompletions(req, res) {
     const message = { role: "assistant", content: result.text ?? "" };
     if (result.toolCalls?.length) message.tool_calls = result.toolCalls;
 
-    return sendJson(res, 200, {
+    const tokenSavingMeta = result._meta?.tokenSaving;
+    const response = {
       id,
       object: "chat.completion",
       created,
@@ -244,7 +266,22 @@ async function handleChatCompletions(req, res) {
         completion_tokens: result.usage.completionTokens,
         total_tokens: result.usage.promptTokens + result.usage.completionTokens,
       },
-    });
+    };
+
+    // x_token_savings: non-standard field (x_ prefix) — safe to include,
+    // won't conflict with strict OpenAI schema clients.
+    if (tokenSavingMeta?.enabled && tokenSavingMeta.totalTokensSaved > 0) {
+      response.x_token_savings = {
+        total_tokens_saved: tokenSavingMeta.totalTokensSaved,
+        tier0_saved: tokenSavingMeta.tier0SavedTokens ?? 0,
+        tier1_saved: tokenSavingMeta.tier1SavedTokens ?? 0,
+        tier2_saved: tokenSavingMeta.tier2SavedTokens ?? 0,
+        tier3_saved: tokenSavingMeta.tier3SavedTokens ?? 0,
+        tier3_warning: tokenSavingMeta.tier3?.warning ?? null,
+      };
+    }
+
+    return sendJson(res, 200, response);
   } catch (err) {
     logError(`chat_completion failed: ${err.message}`);
     return sendJson(res, 502, { error: { message: err.message, type: "upstream_error" } });
@@ -274,11 +311,32 @@ function handleHealth(req, res) {
   const warnings = validateConfig();
   const keys = getApiKeys();
   const configured = Object.keys(PROVIDER_REGISTRY).filter((p) => keys[p]);
+  const cache = cacheStats();
+  const circuits = allCircuitStates();
+  const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
+
   return sendJson(res, 200, {
     status: warnings.length ? "warnings" : "ok",
     configuredProviders: configured,
     warnings,
     port: PORT,
+    uptimeSeconds,
+    requests: { ...requestCounters },
+    cache: {
+      enabled: cache.enabled,
+      size: cache.size,
+      ttlSeconds: cache.ttlSeconds,
+      hits: cache.hits,
+      misses: cache.misses,
+      hitRate: cache.hitRate,
+    },
+    queueDepth: getQueueDepth(),
+    circuits: circuits.map((c) => ({
+      provider: c.provider,
+      state: c.state,
+      failures: c.failures,
+      remainingSeconds: c.remainingSeconds,
+    })),
   });
 }
 
@@ -289,14 +347,18 @@ function handleHealth(req, res) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    requestCounters.total++;
 
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      requestCounters.chatCompletions++;
       return await handleChatCompletions(req, res);
     }
     if (req.method === "GET" && url.pathname === "/v1/models") {
+      requestCounters.models++;
       return handleModels(req, res);
     }
     if (req.method === "GET" && (url.pathname === "/v1/health" || url.pathname === "/health")) {
+      requestCounters.health++;
       return handleHealth(req, res);
     }
 

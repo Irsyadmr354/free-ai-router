@@ -1,0 +1,269 @@
+openapi: 3.0.3
+info:
+  title: free-ai-router HTTP proxy
+  description: >
+    OpenAI-compatible HTTP proxy that routes chat completions across
+    free-tier LLM providers (Gemini, Groq, OpenRouter, Cloudflare, Cohere,
+    Mistral, OpenCode Zen) with automatic fallback, circuit breaking, and
+    a request queue. Runs locally, no auth required (any non-empty API key
+    string works — real provider auth lives server-side in .env).
+  version: 5.1.0
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8787/v1
+    description: Local free-ai-router HTTP proxy (default port; override via PORT env var)
+
+paths:
+  /chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion (OpenAI-compatible)
+      description: >
+        Sends messages to the router's fallback chain of free-tier
+        providers. Supports streaming (SSE) and non-streaming responses,
+        tool/function calling, and JSON mode where the serving provider
+        supports it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: >
+            Successful completion. When `stream: true`, the response is
+            `text/event-stream` with OpenAI-style `data: {...}` chunks
+            terminated by `data: [DONE]`; otherwise a single JSON object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-sent events stream of ChatCompletionChunk objects.
+        '400':
+          description: Invalid request (missing/malformed messages, unsupported image routing, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: All configured providers failed to serve the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /models:
+    get:
+      operationId: listModels
+      summary: List all models across all configured providers
+      responses:
+        '200':
+          description: OpenAI-compatible model list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object:
+                    type: string
+                    example: list
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Model'
+
+  /health:
+    get:
+      operationId: getHealth
+      summary: Server health, config validation, cache, queue, and circuit-breaker snapshot
+      responses:
+        '200':
+          description: Health snapshot. Status is "ok" or "warnings" (never a 5xx for this endpoint).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  schemas:
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+        content:
+          type: string
+
+    ChatCompletionRequest:
+      type: object
+      required: [messages]
+      properties:
+        model:
+          type: string
+          description: Optional model override. If omitted, each provider uses its own default free model.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        max_tokens:
+          type: integer
+          default: 1024
+        temperature:
+          type: number
+          default: 0.7
+        stream:
+          type: boolean
+          default: false
+        providers:
+          type: array
+          items:
+            type: string
+          description: Restrict/order which providers to try. Accepts provider names or configured ALIAS_* names.
+        tools:
+          type: array
+          items:
+            type: object
+          description: OpenAI-style tool/function definitions, forwarded to tool-capable providers.
+        tool_choice:
+          oneOf:
+            - type: string
+            - type: object
+        response_format:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [text, json_object]
+        session_id:
+          type: string
+          description: Groups usage-log entries for multi-call conversations.
+
+    ChatCompletionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: chat.completion
+        created:
+          type: integer
+        model:
+          type: string
+          description: "Actual provider/model that served the request, e.g. \"groq/llama-3.3-70b-versatile\"."
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              message:
+                $ref: '#/components/schemas/ChatMessage'
+              finish_reason:
+                type: string
+                enum: [stop, tool_calls]
+        usage:
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+
+    Model:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          example: model
+        created:
+          type: integer
+        owned_by:
+          type: string
+          example: free-ai-router
+        provider:
+          type: string
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, warnings]
+        configuredProviders:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        port:
+          type: integer
+        uptimeSeconds:
+          type: integer
+        requests:
+          type: object
+          properties:
+            total:
+              type: integer
+            chatCompletions:
+              type: integer
+            models:
+              type: integer
+            health:
+              type: integer
+        cache:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            size:
+              type: integer
+            ttlSeconds:
+              type: integer
+            hits:
+              type: integer
+            misses:
+              type: integer
+            hitRate:
+              type: string
+        queueDepth:
+          type: integer
+        circuits:
+          type: array
+          items:
+            type: object
+            properties:
+              provider:
+                type: string
+              state:
+                type: string
+                enum: [CLOSED, OPEN, HALF_OPEN]
+              failures:
+                type: integer
+              remainingSeconds:
+                type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string

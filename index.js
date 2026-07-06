@@ -24,6 +24,7 @@
  *   15. summarize              — wrapper tool: summarize text
  *   16. code_review            — wrapper tool: review code
  *   17. get_reputation         — provider reputation scores (Batch 6 flagship)
+ *   18. get_server_health      — uptime/cache/queue/circuit snapshot (MCP equivalent of /v1/health)
  *
  * v4.0.0 changes (Batches 2-6):
  *   - chat_completion: streaming param wired through (reports time-to-first-chunk),
@@ -93,6 +94,7 @@ import { startDashboard } from "./lib/dashboard.js";
 import { startSpan, isTracingEnabled } from "./lib/tracing.js";
 import { allCircuitStates, circuitRemainingSeconds } from "./lib/circuit-breaker.js";
 import { getQueueDepth } from "./lib/request-queue.js";
+import { getTokenSavingStats } from "./lib/token-saver.js";
 
 // ---------------------------------------------------------------------------
 // Provider registry — now sourced from lib/router-core.js (shared with
@@ -113,6 +115,7 @@ function getActiveProviderOrder() {
 // ---------------------------------------------------------------------------
 
 const server = new McpServer({ name: "free-ai-router", version: "4.0.0" });
+const SERVER_START_TIME = Date.now();
 
 // ---------------------------------------------------------------------------
 // Tool 1: chat_completion
@@ -144,6 +147,10 @@ server.tool(
     no_code:       z.boolean().optional().default(false).describe("If true, skip the response cache entirely for this call (alias of no_cache; kept for compatibility)."),
     session_id:    z.string().optional().describe("Optional session identifier. Included in the usage log so multiple calls belonging to the same conversation can be grouped when analyzing token usage."),
     verbose:       z.boolean().optional().default(false).describe("If true, append a footnote explaining which providers were skipped and why, and what timing/quality info was observed."),
+    task_type:     z.enum(["code", "chat", "math"]).optional().describe("Hint used for semantic model routing: within whichever provider is tried, prefer a model whose name suggests it's suited for this task (e.g. a *-coder model for \"code\", a reasoning model for \"math\") before falling back to that provider's usual default. Ignored if `model` is explicitly set."),
+    allow_lossy_summarization: z.boolean().optional().default(false).describe("If true and the prompt/context exceeds 50,000 tokens, automatically summarize it via LLM before sending. WARNING: lossy — details may be lost. Only use when token count is the primary concern."),
+    abbreviation_dictionary:   z.record(z.string()).optional().describe("Map of full-word → abbreviation to apply to the prompt (e.g. {\"function\":\"fn\"}). ROI-checked before applying — if the legend overhead exceeds the savings, abbreviations are skipped. Legend is always injected into the system prompt so the model interprets abbreviations correctly."),
+    show_token_savings:        z.boolean().optional().default(false).describe("If true, append a token-saving summary to the response showing how many tokens were saved and by which technique."),
   },
   async (args) => {
     return handleChatCompletion(args);
@@ -153,7 +160,8 @@ server.tool(
 async function handleChatCompletion({
   prompt, system_prompt, max_tokens = 1024, temperature = 0.7, model, providers, messages,
   context, no_cache = false, image_url, image_base64, image_mime_type = "image/jpeg",
-  stream = false, tools, tool_choice, response_format = "text", session_id, verbose = false,
+  stream = false, tools, tool_choice, response_format = "text", session_id, verbose = false, task_type,
+  allow_lossy_summarization = false, abbreviation_dictionary, show_token_savings = false,
 }) {
   const span = isTracingEnabled() ? startSpan("chat_completion", { session_id, model, response_format, stream }) : null;
   try {
@@ -167,7 +175,7 @@ async function handleChatCompletion({
           const chunkPrompt = `${prompt ? prompt + "\n\n" : ""}[Context chunk ${i + 1}/${chunks.length}]\n${chunks[i]}`;
           const result = await handleChatCompletion({
             prompt: chunkPrompt, system_prompt, max_tokens, temperature, model, providers,
-            no_cache, stream, tools, tool_choice, response_format, session_id, verbose: false,
+            no_cache, stream, tools, tool_choice, response_format, session_id, verbose: false, task_type,
           });
           parts.push(`--- chunk ${i + 1}/${chunks.length} ---\n${result.content[0].text}`);
         }
@@ -304,8 +312,10 @@ async function handleChatCompletion({
     // Request deduplication: identical concurrent calls share one in-flight promise.
     const runOnce = () => sharedExecuteProviderChain({
       order, keys, model, params, tools, tool_choice, response_format,
-      hasImage, session_id, sanitizeNote, verbose,
-    }).then((result) => formatMcpResult(result, { skipCache, cacheKey, verbose }));
+      hasImage, session_id, sanitizeNote, verbose, task_type,
+      allowLossySummarization: allow_lossy_summarization,
+      abbreviationDictionary: abbreviation_dictionary,
+    }).then((result) => formatMcpResult(result, { skipCache, cacheKey, verbose, showTokenSavings: show_token_savings }));
 
     const result = skipCache ? await runOnce() : await dedupe(cacheKey, runOnce);
     span?.end({ result: "success" });
@@ -322,7 +332,7 @@ async function handleChatCompletion({
  * write through to the response cache the same way the old inline
  * executeProviderChain used to.
  */
-function formatMcpResult(result, { skipCache, cacheKey, verbose }) {
+function formatMcpResult(result, { skipCache, cacheKey, verbose, showTokenSavings = false }) {
   if (!skipCache) cacheSet(cacheKey, result);
 
   const meta = result._meta ?? {};
@@ -344,6 +354,18 @@ function formatMcpResult(result, { skipCache, cacheKey, verbose }) {
     text += `\n\n---\n[verbose] providers skipped: ${skippedSummary || "none"}. providers errored before success: ${errorSummary || "none"}.`;
   }
 
+  if (showTokenSavings && meta.tokenSaving?.enabled && meta.tokenSaving.totalTokensSaved > 0) {
+    const ts = meta.tokenSaving;
+    const lines = [`\n\n---\n[token savings: ${ts.totalTokensSaved} tokens saved]`];
+    if (ts.tier0?.whitespaceNormalized) lines.push("  • Tier 0: whitespace normalized");
+    if (ts.tier0?.minificationApplied) lines.push("  • Tier 0: structured content minified (JSON/CSS)");
+    if (ts.tier1?.contextTrimmed) lines.push(`  • Tier 1: context trimmed — ${ts.tier1.messagesDropped} old message(s) dropped (${ts.tier1.droppedTurnRange})`);
+    if (ts.tier1?.blocksDeduped) lines.push(`  • Tier 1: ${ts.tier1.blocksDeduped} repeated block(s) deduplicated`);
+    if (ts.tier2?.abbreviationsApplied) lines.push(`  • Tier 2: abbreviation dictionary applied (${ts.tier2.tokensSaved} tokens saved)`);
+    if (ts.tier3?.summarized) lines.push(`  • Tier 3: ${ts.tier3.warning}`);
+    text += lines.join("\n");
+  }
+
   return { content: [{ type: "text", text }] };
 }
 
@@ -354,8 +376,10 @@ function formatMcpResult(result, { skipCache, cacheKey, verbose }) {
 server.tool(
   "list_providers",
   "List all configured providers with their status (active / no-key / on-cooldown), cooldown remaining, reputation score, budget usage, and available models.",
-  {},
-  async () => {
+  {
+    show_all_models: z.boolean().optional().default(false).describe("If true, show every model in the provider's full catalog (including non-chat models like Whisper/STT/TTS). Default false — only chat-capable models are shown."),
+  },
+  async ({ show_all_models = false } = {}) => {
     const keys = getApiKeys();
     const order = getActiveProviderOrder();
     const cooldownList = allCooldowns();
@@ -396,9 +420,11 @@ server.tool(
       r.supportsStream ? "⏱ stream" : null,
     ].filter(Boolean).join(" ");
 
-    const lines = rows.map((r) =>
-      `• ${r.provider} [${r.status}] rep:${r.reputation} ${flags(r)}\n  default: ${r.defaultModel}\n  chat models: ${r.chatModels.join(", ")}\n  budget: ${r.budget}`
-    );
+    const modelsLabel = show_all_models ? "all models" : "chat models";
+    const lines = rows.map((r) => {
+      const shownModels = show_all_models ? r.supportedModels : r.chatModels;
+      return `• ${r.provider} [${r.status}] rep:${r.reputation} ${flags(r)}\n  default: ${r.defaultModel}\n  ${modelsLabel}: ${shownModels.join(", ")}\n  budget: ${r.budget}`;
+    });
 
     const queueDepth = getQueueDepth();
     const queueNote = queueDepth > 0 ? `\n\n⏳ Request queue: ${queueDepth} request(s) waiting for provider recovery` : "";
@@ -672,48 +698,72 @@ server.tool(
 
 server.tool(
   "compare_providers",
-  "Send the same prompt to multiple providers simultaneously and show all responses with latency side-by-side, for evaluating model quality/speed differences.",
+  "Send the same prompt to multiple providers simultaneously and show all responses with latency side-by-side, for evaluating model quality/speed differences. Optionally pass `tools` to evaluate tool/function calling behavior across providers — providers that don't support tool calling are skipped with a note rather than silently ignoring the tools.",
   {
     prompt:        z.string().min(1).describe("The prompt to send to every provider."),
     system_prompt: z.string().optional().describe("Optional system prompt applied to every provider."),
     max_tokens:    z.number().int().min(1).max(8192).optional().default(512),
     temperature:   z.number().min(0).max(2).optional().default(0.7),
     providers:     z.array(z.string()).optional().describe("Providers to compare. Defaults to all configured providers with an API key."),
+    tools:         z.array(z.object({}).passthrough()).optional().describe("OpenAI-style tool/function definitions to forward to every provider that supports tool calling, for comparing tool-calling behavior side-by-side. Providers without tool support are skipped (noted in output) rather than sent a request that will ignore the tools."),
+    tool_choice:   z.union([z.string(), z.object({}).passthrough()]).optional().describe("Forwarded to providers supporting tool_choice."),
   },
-  async ({ prompt, system_prompt, max_tokens = 512, temperature = 0.7, providers }) => {
+  async ({ prompt, system_prompt, max_tokens = 512, temperature = 0.7, providers, tools, tool_choice }) => {
     const keys = getApiKeys();
-    const candidates = (providers?.length ? resolveProviderAliases(providers) : getActiveProviderOrder())
+    let candidates = (providers?.length ? resolveProviderAliases(providers) : getActiveProviderOrder())
       .filter((p) => PROVIDER_REGISTRY[p] && keys[p]);
 
     if (!candidates.length) {
       throw new Error("No configured providers available to compare (check API keys).");
     }
 
+    const skipped = [];
+    if (tools?.length) {
+      const toolCapable = candidates.filter((p) => PROVIDER_REGISTRY[p]?.supportsTools);
+      const notCapable = candidates.filter((p) => !PROVIDER_REGISTRY[p]?.supportsTools);
+      skipped.push(...notCapable);
+      candidates = toolCapable;
+      if (!candidates.length) {
+        throw new Error(`\`tools\` was provided but none of the candidate providers support tool calling (checked: ${notCapable.join(", ")}).`);
+      }
+    }
+
+    const TOOLS_CAP = { groq: 128, mistral: 64, gemini: 128 };
+
     const results = await Promise.allSettled(
       candidates.map(async (name) => {
         const entry = PROVIDER_REGISTRY[name];
         const cap = getMaxTokensCap(name);
         const start = Date.now();
-        const result = await entry.fn({
+        const callParams = {
           prompt, systemPrompt: system_prompt, maxTokens: Math.min(max_tokens, cap),
           temperature, model: entry.defaultModel, apiKey: keys[name],
-        });
-        return { name, model: result.model, latencyMs: Date.now() - start, text: result.text };
+        };
+        if (tools?.length) {
+          const toolsCap = TOOLS_CAP[name];
+          callParams.tools = toolsCap ? tools.slice(0, toolsCap) : tools;
+          if (tool_choice) callParams.toolChoice = tool_choice;
+        }
+        const result = await entry.fn(callParams);
+        return { name, model: result.model, latencyMs: Date.now() - start, text: result.text, toolCalls: result.toolCalls };
       })
     );
 
     const lines = results.map((r, i) => {
       const name = candidates[i];
       if (r.status === "fulfilled") {
-        return `### ${name} (${r.value.model}) — ${r.value.latencyMs}ms\n${r.value.text}`;
+        const toolCallsNote = r.value.toolCalls?.length ? `\n[tool calls]\n${JSON.stringify(r.value.toolCalls, null, 2)}` : "";
+        return `### ${name} (${r.value.model}) — ${r.value.latencyMs}ms\n${r.value.text}${toolCallsNote}`;
       }
       return `### ${name} — FAILED\n${buildReason(r.reason)}`;
     });
 
+    const skippedNote = skipped.length ? `\n\n(skipped — no tool-calling support: ${skipped.join(", ")})` : "";
+
     return {
       content: [{
         type: "text",
-        text: `Comparison across ${candidates.length} provider(s):\n\n${lines.join("\n\n---\n\n")}`,
+        text: `Comparison across ${candidates.length} provider(s):\n\n${lines.join("\n\n---\n\n")}${skippedNote}`,
       }],
     };
   }
@@ -907,9 +957,84 @@ server.tool(
 );
 
 // ---------------------------------------------------------------------------
-// MCP Resources — expose usage-log.jsonl and cooldown-state.json directly
+// Tool 18: get_server_health
 // ---------------------------------------------------------------------------
 
+server.tool(
+  "get_server_health",
+  "Server health/monitoring snapshot equivalent to the HTTP proxy's GET /v1/health endpoint, accessible via MCP tool: uptime, config warnings, cache hit rate, request queue depth, and circuit breaker states per provider.",
+  {},
+  async () => {
+    const warnings = validateConfig();
+    const keys = getApiKeys();
+    const configured = Object.keys(PROVIDER_REGISTRY).filter((p) => keys[p]);
+    const cache = cacheStats();
+    const circuits = allCircuitStates();
+    const uptimeSeconds = Math.floor((Date.now() - SERVER_START_TIME) / 1000);
+    const stats = getSessionStats();
+    const totalCalls = stats.reduce((a, s) => a + s.calls, 0);
+
+    const circuitLines = circuits.length
+      ? circuits.map((c) => `  • ${c.provider}: ${c.state}${c.remainingSeconds ? ` (${c.remainingSeconds}s remaining)` : ""} — ${c.failures} recent failure(s)`)
+      : ["  (no circuit breaker activity yet)"];
+
+    return {
+      content: [{
+        type: "text",
+        text: [
+          `Status: ${warnings.length ? "warnings" : "ok"}`,
+          `Uptime: ${uptimeSeconds}s`,
+          `Configured providers: ${configured.join(", ") || "(none)"}`,
+          `Total calls served this session: ${totalCalls}`,
+          "",
+          "=== Cache ===",
+          `  Enabled: ${cache.enabled}`,
+          `  Entries: ${cache.size}`,
+          `  Hits/Misses: ${cache.hits}/${cache.misses}`,
+          `  Hit rate: ${cache.hitRate}`,
+          "",
+          `Request queue depth: ${getQueueDepth()}`,
+          "",
+          "=== Circuit breakers ===",
+          ...circuitLines,
+          ...(warnings.length ? ["", "=== Config warnings ===", ...warnings.map((w) => `  ⚠️ ${w}`)] : []),
+        ].join("\n"),
+      }],
+    };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Tool 19: get_token_savings_report
+// ---------------------------------------------------------------------------
+
+server.tool(
+  "get_token_savings_report",
+  "Show aggregated token saving statistics for this server session: how many tokens were saved by each tier (whitespace normalization, context trimming, abbreviations, LLM summarization), total tokens saved, and average savings per call.",
+  {},
+  async () => {
+    const stats = getTokenSavingStats();
+    const lines = [
+      `Total calls processed by token saver: ${stats.calls}`,
+      `Total tokens saved this session: ${stats.totalSavedTokens}`,
+      `Average saved per call: ~${stats.averageSavedPerCall} tokens`,
+      "",
+      "Breakdown by tier:",
+      `  • Tier 0 (whitespace + minification): ${stats.tier0SavedTokens} tokens`,
+      `  • Tier 1 (context trim + dedup): ${stats.tier1SavedTokens} tokens`,
+      `  • Tier 2 (abbreviation dictionary): ${stats.tier2SavedTokens} tokens`,
+      `  • Tier 3 (LLM summarization): ${stats.tier3SavedTokens} tokens`,
+      "",
+      "Token saving is enabled by default (Tier 0+1). Tier 2 requires abbreviation_dictionary parameter.",
+      "Tier 3 requires allow_lossy_summarization=true — use with caution, details may be lost.",
+    ];
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+// ---------------------------------------------------------------------------
+// MCP Resources — expose usage-log.jsonl and cooldown-state.json directly
+// ---------------------------------------------------------------------------
 server.resource(
   "usage-log",
   "file://usage-log.jsonl",
@@ -952,6 +1077,12 @@ async function startupHealthCheck() {
 
   log(`Running startup health check for: ${configured.join(", ")}`);
 
+  // FAIL_ON_INVALID_KEY: when enabled, a provider whose configured key fails
+  // auth (401/403) at startup is treated as fatal instead of silently
+  // continuing with a degraded provider chain.
+  const failOnInvalidKey = process.env.FAIL_ON_INVALID_KEY === "true";
+  const invalidKeyProviders = [];
+
   const checks = configured.map(async (name) => {
     const entry = PROVIDER_REGISTRY[name];
     const apiKey = keys[name];
@@ -977,6 +1108,11 @@ async function startupHealthCheck() {
       if (status === 429) {
         markCooldown(name);
         logError(`⚠️  ${name} rate-limited at startup — cooldown started`);
+      } else if (status === 401 || status === 403) {
+        // Explicit, actionable message — almost always an expired/revoked/
+        // mistyped key, not a transient issue.
+        logError(`❌ ${name.toUpperCase()}_API_KEY appears expired or revoked (HTTP ${status}) — remove or replace it in .env. Raw: ${buildReason(err)}`);
+        invalidKeyProviders.push(name);
       } else {
         logError(`❌ ${name} unreachable at startup — ${buildReason(err)}`);
       }
@@ -985,6 +1121,11 @@ async function startupHealthCheck() {
 
   await Promise.allSettled(checks);
   log("Startup health check complete");
+
+  if (failOnInvalidKey && invalidKeyProviders.length) {
+    logError(`FAIL_ON_INVALID_KEY=true and the following provider(s) have invalid keys: ${invalidKeyProviders.join(", ")}. Exiting rather than running with a broken provider chain silently.`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------

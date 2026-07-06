@@ -8,7 +8,7 @@
  */
 
 import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
-import { getTimeout } from "../lib/config.js";
+import { getTimeout, getStreamTimeout } from "../lib/config.js";
 
 const ENDPOINT = "https://api.cohere.com/v2/chat";
 export const DEFAULT_MODEL = "command-r-plus-08-2024";
@@ -154,7 +154,8 @@ export async function streamCohere({ prompt, systemPrompt, maxTokens, temperatur
   const body = { model, messages, max_tokens: maxTokens, temperature, stream: true };
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), getTimeout("cohere"));
+  const streamTimeoutMs = getStreamTimeout("cohere");
+  const timeoutId = setTimeout(() => controller.abort(), streamTimeoutMs);
   if (abortSignal) abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
 
   const startedAt = Date.now();
@@ -172,7 +173,7 @@ export async function streamCohere({ prompt, systemPrompt, maxTokens, temperatur
     });
   } catch (err) {
     clearTimeout(timeoutId);
-    const msg = err.name === "AbortError" ? "Request timed out after " + getTimeout("cohere") + "ms" : String(err.message);
+    const msg = err.name === "AbortError" ? "Request timed out after " + streamTimeoutMs + "ms" : String(err.message);
     throw new ProviderError(`Cohere network/timeout error: ${msg}`, null, "cohere", msg);
   } finally {
     clearTimeout(timeoutId);

@@ -1,27 +1,43 @@
 {
   "name": "free-ai-router",
-  "version": "4.0.0",
+  "version": "5.2.0",
   "description": "MCP server that routes chat completions across free-tier LLM providers with automatic fallback",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "bin": {
-    "free-ai-router": "./index.js"
+    "free-ai-router": "./index.js",
+    "free-ai-router-http": "./http-server.js"
   },
   "files": [
     "index.js",
     "http-server.js",
     "lib",
     "providers",
+    "templates",
+    "scripts",
+    "openapi.yaml",
     "README.md",
+    "ROADMAP.md",
+    "CHANGELOG.md",
     "LICENSE",
     ".env.example"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Irsyadmr354/free-ai-router.git"
+  },
+  "keywords": ["mcp", "llm", "router", "free-tier", "gemini", "groq", "openrouter", "fallback"],
+  "license": "MIT",
   "scripts": {
     "start": "node index.js",
     "start:http": "node http-server.js",
-    "test": "node test-call.js"
+    "test": "node test-call.js",
+    "check": "node scripts/check-syntax.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
