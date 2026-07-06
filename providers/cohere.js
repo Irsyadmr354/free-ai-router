@@ -11,9 +11,9 @@ import { normalizeSuccess, ProviderError } from "../lib/normalize.js";
 import { getTimeout } from "../lib/config.js";
 
 const ENDPOINT = "https://api.cohere.com/v2/chat";
-export const DEFAULT_MODEL = "command-r";
+export const DEFAULT_MODEL = "command-r-plus-08-2024";
 
-export const SUPPORTED_MODELS = ["command-r", "command-r-plus", "command-light"];
+export const SUPPORTED_MODELS = ["command-r-plus-08-2024", "command-r-08-2024", "command-light"];
 
 /**
  * @param {object} p

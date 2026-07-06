@@ -1,6 +1,6 @@
 {
   "name": "free-ai-router",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "MCP server that routes chat completions across free-tier LLM providers with automatic fallback",
   "type": "module",
   "engines": {
