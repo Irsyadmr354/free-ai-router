@@ -89,3 +89,27 @@ export async function callCloudflare({ prompt, systemPrompt, maxTokens, temperat
 
   return normalizeSuccess(text, "cloudflare", model, { promptTokens: 0, completionTokens: 0 });
 }
+
+/**
+ * "Streaming" variant for Cloudflare Workers AI.
+ *
+ * NOTE: Cloudflare's /ai/run/ REST endpoint for these text-generation
+ * models does not reliably support true incremental SSE the way the
+ * OpenAI-compatible providers do (this has changed over time per-model and
+ * isn't consistent across the free-tier catalog here). Rather than risk a
+ * silently-broken stream, this simply calls the existing non-streaming
+ * callCloudflare() and emits the ENTIRE response as a single onDelta() call
+ * — i.e. simulated single-chunk "streaming". The client still gets a valid
+ * OpenAI-style SSE stream from http-server.js, it just arrives as one chunk
+ * instead of many. If Cloudflare's native streaming is confirmed later,
+ * swap this to real incremental parsing.
+ *
+ * @param {object} p - same shape as callCloudflare(), plus:
+ * @param {(text: string) => void} p.onDelta - called once with the full text
+ * @param {AbortSignal} [p.abortSignal] - forwarded to the underlying call (not currently used by callCloudflare, no-op if absent)
+ */
+export async function streamCloudflare({ onDelta, abortSignal, ...rest }) {
+  const result = await callCloudflare(rest);
+  if (result.text) onDelta?.(result.text);
+  return { ...result, timing: { ...result.timing, streamed: true } };
+}

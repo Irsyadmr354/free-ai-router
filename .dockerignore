@@ -1,0 +1,6 @@
+.env
+node_modules
+usage-log.jsonl
+cooldown-state.json
+.git
+*.md

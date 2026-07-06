@@ -1,13 +1,27 @@
 {
   "name": "free-ai-router",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "MCP server that routes chat completions across free-tier LLM providers with automatic fallback",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
+  "bin": {
+    "free-ai-router": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "http-server.js",
+    "lib",
+    "providers",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:http": "node http-server.js",
+    "test": "node test-call.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

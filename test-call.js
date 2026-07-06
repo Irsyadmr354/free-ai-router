@@ -1,8 +1,15 @@
 import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
 
-const server = spawn("node", ["index.js"], {
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Use process.execPath instead of the string "node" — this is the exact
+// path to the Node binary currently running this script, so it works
+// regardless of how PATH is set up in the parent shell (nvm, WSL, etc).
+const server = spawn(process.execPath, ["index.js"], {
   stdio: ["pipe", "pipe", "inherit"],
-  cwd: new URL(".", import.meta.url).pathname.replace(/^\//, ""),
+  cwd: __dirname,
 });
 
 const init = {
