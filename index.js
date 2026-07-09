@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * index.js
- * MCP server entry point for free-ai-router (v4.0.0).
+ * MCP server entry point for free-ai-router (v6.0.0).
  *
  * See ROADMAP.md for the full feature backlog this version implements
  * (Batches 2-6). Registered tools are listed below; grep for "Tool N:" to
@@ -120,7 +120,7 @@ function getActiveProviderOrder() {
 // MCP server setup
 // ---------------------------------------------------------------------------
 
-const server = new McpServer({ name: "free-ai-router", version: "4.0.0" });
+const server = new McpServer({ name: "free-ai-router", version: "6.0.0" });
 const SERVER_START_TIME = Date.now();
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ const SERVER_START_TIME = Date.now();
 
 server.tool(
   "chat_completion",
-  "Send a prompt to a free-tier LLM. Automatically tries providers in order (default: Gemini → Groq → OpenRouter → Cloudflare → SambaNova → Cohere → Mistral), skipping any provider currently on rate-limit cooldown, near its known free-tier budget, or with low reputation. Within a single provider, if the chosen model fails with a retryable error, other models supported by that provider are tried before moving to the next provider. Supports image input (Gemini), tool/function calling, JSON mode, streaming timing, long-context auto-chunking, and prompt templates. Returns which provider/model actually served the request.",
+  "Send a prompt to a free-tier LLM. Automatically tries providers in order (default: Gemini → Groq → OpenRouter → Cloudflare → Cohere → Mistral), skipping any provider currently on rate-limit cooldown, near its known free-tier budget, or with low reputation. Within a single provider, if the chosen model fails with a retryable error, other models supported by that provider are tried before moving to the next provider. Supports image input (Gemini), tool/function calling, JSON mode, streaming timing, long-context auto-chunking, and prompt templates. Returns which provider/model actually served the request.",
   {
     prompt:        z.string().optional().describe("The user message / prompt to send. Required unless `messages` or `context` is provided."),
     system_prompt: z.string().optional().describe("Optional system prompt."),
@@ -146,7 +146,7 @@ server.tool(
     image_url:     z.string().url().optional().describe("URL of an image to analyze alongside the prompt. Only supported via the Gemini provider — the router will route this request to Gemini regardless of the configured provider order."),
     image_base64:  z.string().optional().describe("Base64-encoded image data (no data: prefix) to analyze alongside the prompt. Only supported via Gemini. Use image_mime_type to set the format."),
     image_mime_type: z.string().optional().default("image/jpeg").describe("MIME type of image_base64 (e.g. image/png, image/jpeg). Ignored for image_url."),
-    stream:        z.boolean().optional().default(false).describe("Request the response as a stream from the provider (where supported: Groq, OpenRouter, Mistral, SambaNova, Cohere). The full text is still returned in one tool result (stdio can't push partial chunks to the caller), but time-to-first-chunk is measured and included when verbose=true."),
+    stream:        z.boolean().optional().default(false).describe("Request the response as a stream from the provider (where supported: Groq, OpenRouter, Mistral, Cohere). The full text is still returned in one tool result (stdio can't push partial chunks to the caller), but time-to-first-chunk is measured and included when verbose=true."),
     tools:         z.array(z.object({}).passthrough()).optional().describe("OpenAI-style tool/function definitions to forward to providers that support tool calling (Groq, OpenRouter, Mistral, Gemini). If the model responds with tool calls instead of text, they are returned as-is for you to execute and continue the conversation."),
     tool_choice:   z.union([z.string(), z.object({}).passthrough()]).optional().describe("Forwarded to providers supporting tool_choice (e.g. \"auto\", \"none\", or a specific tool spec)."),
     response_format: z.enum(["text", "json"]).optional().default("text").describe("Set to \"json\" for structured JSON output on providers that support native JSON mode (Groq, OpenRouter, Gemini, Mistral)."),
@@ -165,7 +165,7 @@ server.tool(
 
 async function handleChatCompletion({
   prompt, system_prompt, max_tokens = 1024, temperature = 0.7, model, providers, messages,
-  context, no_cache = false, image_url, image_base64, image_mime_type = "image/jpeg",
+  context, no_cache = false, no_code = false, image_url, image_base64, image_mime_type = "image/jpeg",
   stream = false, tools, tool_choice, response_format = "text", session_id, verbose = false, task_type,
   allow_lossy_summarization = false, abbreviation_dictionary, show_token_savings = false,
 }) {
@@ -299,7 +299,7 @@ async function handleChatCompletion({
       image_base64,
     });
 
-    const skipCache = no_cache || hasImage || Boolean(tools?.length);
+    const skipCache = no_cache || no_code || hasImage || Boolean(tools?.length);
 
     if (!skipCache) {
       const cached = cacheGet(cacheKey);

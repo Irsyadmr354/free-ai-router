@@ -6,6 +6,7 @@
  *   gemini-2.5-flash, gemini-2.0-flash, gemini-1.5-flash, gemini-1.5-flash-8b
  */
 
+import { randomUUID } from "crypto";
 import { normalizeSuccess, normalizeEmbedding, ProviderError } from "../lib/normalize.js";
 import { getTimeout } from "../lib/config.js";
 
@@ -37,8 +38,38 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
   // everything into one flattened `prompt` string, which previously
   // silently dropped conversational turn structure for Gemini specifically
   // (every other provider already forwards `messages` as-is).
+  const mapMessage = (m) => {
+    if (m.role === "tool") {
+      let parsedResponse = { result: m.content };
+      try {
+        const parsed = JSON.parse(m.content);
+        if (parsed && typeof parsed === "object") parsedResponse = parsed;
+      } catch (e) {}
+      return {
+        role: "function",
+        parts: [{
+          functionResponse: {
+            name: m.name || m.tool_call_id || "unknown",
+            response: parsedResponse
+          }
+        }]
+      };
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const parts = [];
+      if (m.content) parts.push({ text: m.content });
+      for (const tc of m.tool_calls) {
+        let args = {};
+        try { args = typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments; } catch (e) {}
+        parts.push({ functionCall: { name: tc.function.name, args } });
+      }
+      return { role: "model", parts };
+    }
+    return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content || "" }] };
+  };
+
   const contents = providedMessages?.length
-    ? providedMessages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }))
+    ? providedMessages.map(mapMessage)
     : [{ role: "user", parts: [{ text: prompt }] }];
 
   const lastContent = contents[contents.length - 1];
@@ -99,7 +130,16 @@ export async function callGemini({ prompt, systemPrompt, maxTokens, temperature,
   };
 
   const result = normalizeSuccess(text ?? "", "gemini", model, usage);
-  if (functionCalls.length) result.toolCalls = functionCalls;
+  if (functionCalls.length) {
+    result.toolCalls = functionCalls.map((fc) => ({
+      id: `call_${crypto.randomUUID().slice(0, 8)}`,
+      type: "function",
+      function: {
+        name: fc.name,
+        arguments: JSON.stringify(fc.args ?? {}),
+      },
+    }));
+  }
   return result;
 }
 
@@ -119,8 +159,38 @@ export async function streamGemini({ prompt, systemPrompt, maxTokens, temperatur
   const url = `${BASE}/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   // Same multi-turn translation as callGemini() — see comment there.
+  const mapMessage = (m) => {
+    if (m.role === "tool") {
+      let parsedResponse = { result: m.content };
+      try {
+        const parsed = JSON.parse(m.content);
+        if (parsed && typeof parsed === "object") parsedResponse = parsed;
+      } catch (e) {}
+      return {
+        role: "function",
+        parts: [{
+          functionResponse: {
+            name: m.name || m.tool_call_id || "unknown",
+            response: parsedResponse
+          }
+        }]
+      };
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const parts = [];
+      if (m.content) parts.push({ text: m.content });
+      for (const tc of m.tool_calls) {
+        let args = {};
+        try { args = typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments; } catch (e) {}
+        parts.push({ functionCall: { name: tc.function.name, args } });
+      }
+      return { role: "model", parts };
+    }
+    return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content || "" }] };
+  };
+
   const contents = providedMessages?.length
-    ? providedMessages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }))
+    ? providedMessages.map(mapMessage)
     : [{ role: "user", parts: [{ text: prompt }] }];
 
   const lastContent = contents[contents.length - 1];
@@ -237,7 +307,16 @@ export async function streamGemini({ prompt, systemPrompt, maxTokens, temperatur
 
   const usage = { promptTokens, completionTokens };
   const result = normalizeSuccess(fullText, "gemini", model, usage, { firstChunkMs, streamed: true });
-  if (functionCalls.length) result.toolCalls = functionCalls;
+  if (functionCalls.length) {
+    result.toolCalls = functionCalls.map((fc) => ({
+      id: `call_${randomUUID().slice(0, 8)}`,
+      type: "function",
+      function: {
+        name: fc.name,
+        arguments: JSON.stringify(fc.args ?? {}),
+      },
+    }));
+  }
   return result;
 }
 
