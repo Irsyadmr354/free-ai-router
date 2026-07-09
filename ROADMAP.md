@@ -63,6 +63,15 @@ Update terakhir: 2026-07-06 (setelah v5.1.0 — audit menyeluruh + backlog lengk
 - ✅ SambaNova dihapus (tidak genuinely free)
 - ✅ OpenCode Zen provider dengan auto-sync model
 
+### v7.0.0 — Advanced Routing Architecture
+- ✅ **Model Ensembling (Mixture of Agents)** — `model: "ensemble"` queries top 3 providers in parallel, synthesizes the best answer via a 4th
+- ✅ **Universal Tool Calling Polyfill** — providers without native tool support get tools injected as structured system prompts, with `<tool_call>` XML parsing on output
+- ✅ **Hot-Swap Streaming Fallback** — if a stream dies mid-response, the next provider picks up exactly where it left off (no restart from scratch)
+- ✅ **Local Auto-RAG** — prompts >20k tokens are automatically chunked, embedded locally via `all-MiniLM-L6-v2`, and only the most relevant chunks are sent to the API
+- ✅ **JS/TS AST minification** — Tier 0 now minifies JavaScript/TypeScript code blocks via `terser`
+- ✅ `@xenova/transformers` dependency for local embedding
+- ✅ `ensemble` virtual model exposed in `/v1/models` endpoint
+
 ### v5.2.0
 - ✅ Token Saving module (`lib/token-saver.js`) — 4-tier pipeline
 - ✅ Tier 0: `normalizeWhitespace()`, `minifyStructuredContent()` (JSON/CSS)

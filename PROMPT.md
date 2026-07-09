@@ -1,92 +1,99 @@
-# PROMPT UNTUK AI AGENT — Implementasi Token Saving Proxy di free-ai-router
+# PROMPT FOR AI AGENT — Implementing Token Saving Proxy in free-ai-router
 
-Salin seluruh isi di bawah ini dan berikan ke AI coding agent (Claude Code, dsb) yang punya akses ke direktori proyek `free-ai-router`.
-
----
-
-## MULAI PROMPT
-
-Kamu bekerja di proyek `free-ai-router` (MCP server + HTTP proxy OpenAI-compatible yang route chat completion ke 7 provider LLM gratis dengan fallback otomatis). Tugasmu: **menambahkan modul Token Saving** — sistem penghematan token input/output yang powerful tapi aman (tidak menyebabkan halusinasi/kehilangan makna).
-
-Baca dulu `ROADMAP.md`, `lib/router-core.js`, `lib/config.js`, `index.js`, dan `http-server.js` untuk memahami arsitektur yang ada sebelum mengubah apa pun. Fitur ini HARUS terintegrasi dengan alur `executeProviderChain()` di `lib/router-core.js`, dipakai oleh KEDUA entry point (`index.js` MCP dan `http-server.js` HTTP proxy), bukan diimplementasikan dua kali secara terpisah.
-
-### Prinsip desain wajib (jangan dilanggar)
-
-1. **Hierarki tier berdasarkan risiko halusinasi** — implementasikan persis 4 tier ini:
-   - **Tier 0** (selalu ON, risiko 0%): deterministik murni, bisa dibuktikan reversible
-   - **Tier 1** (default ON, risiko ~0%): deterministik + heuristik, tapi WAJIB transparan kalau ada data yang dipotong
-   - **Tier 2** (opt-in via parameter, risiko rendah): lossy terkontrol, harus dihitung ROI-nya dulu sebelum diterapkan
-   - **Tier 3** (opt-in eksplisit + wajib warning di response, risiko sedang-tinggi): pakai LLM untuk meringkas, default OFF
-
-2. **Transparansi wajib** — setiap response (baik dari MCP tool maupun HTTP proxy) harus menyertakan metadata jujur tentang apa yang terjadi: berapa token dihemat, teknik apa yang dipakai, apakah ada context yang dipotong/hilang, dan warning eksplisit untuk operasi lossy. **DILARANG KERAS** silent data loss — ini pernah jadi bug kritis di proyek internal lain (`tokesave-mcp`) yang harus dihindari di sini.
-
-3. **Urutan prioritas eksekusi**: cache/dedup dulu (paling besar ROI-nya, 100% hemat kalau hit) → baru kompresi (20-50% hemat) → baru opsi lossy kalau diminta eksplisit. Jangan buang waktu compute kompresi kalau cache hit.
-
-4. **Semua teknik lossy harus menghitung ROI sebelum diterapkan** — kalau overhead metadata/legend lebih mahal dari yang dihemat, skip teknik itu otomatis dan laporkan di metadata bahwa itu di-skip karena tidak menguntungkan.
+Copy the entire content below and give it to an AI coding agent (Claude Code, etc.) that has access to the `free-ai-router` project directory.
 
 ---
 
-### Struktur file yang harus dibuat
+## START PROMPT
 
-Buat modul baru di `lib/token-saver.js` dengan fungsi-fungsi berikut. Ikuti gaya kode yang sudah ada di proyek ini (JSDoc lengkap di setiap fungsi, konfigurasi lewat env var dengan getter di `lib/config.js`, error handling yang tidak pernah throw untuk operasi opsional).
+You are working on the `free-ai-router` project (an MCP server + OpenAI-compatible HTTP proxy that routes chat completions to 7 free LLM providers with automatic fallback). Your task: **add a Token Saving module** — a powerful but safe input/output token-reduction system (must not cause hallucination or loss of meaning).
 
-#### TIER 0 — Deterministik murni (selalu aktif, tidak butuh flag)
+First read `ROADMAP.md`, `lib/router-core.js`, `lib/config.js`, `index.js`, and `http-server.js` to understand the existing architecture before changing anything. This feature MUST integrate with the `executeProviderChain()` flow in `lib/router-core.js`, and be used by BOTH entry points (`index.js` MCP and `http-server.js` HTTP proxy) — not implemented twice separately.
+
+### Mandatory design principles (do not violate)
+
+1. **Tier hierarchy based on hallucination risk** — implement exactly these 4 tiers:
+   - **Tier 0** (always ON, 0% risk): purely deterministic, provably reversible
+   - **Tier 1** (default ON, ~0% risk): deterministic + heuristic, but MUST be transparent when data is trimmed
+   - **Tier 2** (opt-in via parameter, low risk): controlled lossy, ROI must be calculated before applying
+   - **Tier 3** (explicit opt-in + mandatory warning in response, medium-high risk): uses an LLM to summarize, default OFF
+
+2. **Mandatory transparency** — every response (from either the MCP tool or the HTTP proxy) must include honest metadata about what happened: how many tokens were saved, which technique was used, whether any context was trimmed/lost, and an explicit warning for lossy operations. **STRICTLY FORBIDDEN**: silent data loss — this was a critical bug in another internal project (`tokesave-mcp`) that must be avoided here.
+
+3. **Execution priority order**: cache/dedup first (highest ROI, 100% savings on a hit) → then compression (20-50% savings) → then lossy options only if explicitly requested. Don't waste compute on compression if there's a cache hit.
+
+4. **All lossy techniques must calculate ROI before applying** — if the metadata/legend overhead costs more than what's saved, automatically skip that technique and report in the metadata that it was skipped because it wasn't beneficial.
+
+---
+
+### File structure to create
+
+Create a new module at `lib/token-saver.js` with the following functions. Follow the existing code style in this project (full JSDoc on every function, configuration via env vars with getters in `lib/config.js`, error handling that never throws for optional operations).
+
+#### TIER 0 — Purely deterministic (always active, no flag needed)
 
 **1. `minifyStructuredContent(text, contentType)`**
-- Deteksi apakah `context` atau bagian dari prompt berisi kode (JS/TS/JSON/CSS/HTML) berdasarkan heuristik sederhana (fence markdown ```` ```js ````, ekstensi file disebutkan, dsb) atau parameter eksplisit.
-- Untuk JS/TS: gunakan library `terser` (tambahkan sebagai dependency di `package.json`) untuk minify AST-based — BUKAN regex. Kalau parsing gagal (bukan kode valid), kembalikan teks asli tanpa error, cukup log warning.
-- Untuk JSON: `JSON.stringify(JSON.parse(text))` tanpa indentasi — kalau parse gagal, kembalikan asli.
-- Untuk CSS: implementasikan minifier sederhana sendiri (strip komentar `/* */`, whitespace berlebih, atau tambahkan `csso`/`clean-css` sebagai dependency ringan) — pilih yang paling ringan dependency-nya.
+
+- Detect whether the `context` or part of the prompt contains code (JS/TS/JSON/CSS/HTML) based on simple heuristics (markdown fences ` ```js `, mentioned file extensions, etc.) or an explicit parameter.
+- For JS/TS: use the `terser` library (add as a dependency in `package.json`) for AST-based minification — NOT regex. If parsing fails (not valid code), return the original text without error, just log a warning.
+- For JSON: `JSON.stringify(JSON.parse(text))` with no indentation — if parsing fails, return the original.
+- For CSS: implement a simple minifier yourself (strip `/* */` comments, excess whitespace) or add `csso`/`clean-css` as a lightweight dependency — pick whichever has the lightest dependency footprint.
 - Return `{ text: minifiedText, originalTokenEstimate, minifiedTokenEstimate, applied: boolean }`.
 
 **2. `normalizeWhitespace(text)`**
-- Hapus trailing whitespace per baris.
-- Kompres 3+ baris kosong berturut-turut jadi maksimal 1 baris kosong.
-- Hapus spasi ganda di dalam kalimat (bukan di dalam blok kode — deteksi dulu apakah teks mengandung blok kode dan skip bagian itu).
-- Ini SELALU jalan, tidak butuh flag, karena risikonya nol.
 
-**3. Cache & dedup** — proyek ini SUDAH punya `lib/cache.js` dan `lib/dedup.js`. JANGAN buat ulang. Pastikan token-saver ini terintegrasi SETELAH cache check di `executeProviderChain()`, bukan sebelum atau menggantikannya.
+- Remove trailing whitespace per line.
+- Compress 3+ consecutive blank lines down to a maximum of 1 blank line.
+- Remove double spaces within sentences (but not inside code blocks — detect whether the text contains a code block and skip that part).
+- This ALWAYS runs, no flag needed, since the risk is zero.
 
-#### TIER 1 — Deterministik + heuristik (default ON, bisa dimatikan via env var)
+**3. Cache & dedup** — this project ALREADY has `lib/cache.js` and `lib/dedup.js`. DO NOT recreate them. Make sure token-saver integrates AFTER the cache check in `executeProviderChain()`, not before or in place of it.
+
+#### TIER 1 — Deterministic + heuristic (default ON, can be disabled via env var)
 
 **4. `trimContextWindow(messages, options)`**
-- Strategi: selalu pertahankan penuh pesan dengan `role: "system"`, selalu pertahankan `N` pesan terakhir (default `N=10`, konfigurasi via `CONTEXT_TRIM_KEEP_RECENT`), potong pesan-pesan lama di antaranya HANYA kalau total estimasi token melebihi `CONTEXT_TRIM_THRESHOLD_TOKENS` (default 8000, configurable).
-- WAJIB return metadata: `{ messages: trimmedArray, trimmed: boolean, messagesDropped: number, droppedTurnRange: string }` — ini dipakai untuk transparansi ke user, JANGAN buang informasi ini.
-- Jangan pernah memotong pesan terakhir milik user (pesan yang sedang ditanyakan sekarang) — itu akan merusak request.
+
+- Strategy: always fully preserve messages with `role: "system"`, always preserve the last `N` messages (default `N=10`, configurable via `CONTEXT_TRIM_KEEP_RECENT`), only trim older messages in between when the total estimated token count exceeds `CONTEXT_TRIM_THRESHOLD_TOKENS` (default 8000, configurable).
+- MUST return metadata: `{ messages: trimmedArray, trimmed: boolean, messagesDropped: number, droppedTurnRange: string }` — this is used for transparency to the user, DO NOT discard this information.
+- Never trim the last user message (the one currently being asked) — that would break the request.
 
 **5. `deduplicateRepeatedBlocks(messages)`**
-- Deteksi kalau ada blok teks identik (persis sama, exact string match, bukan semantic) yang muncul di lebih dari satu pesan dalam array `messages[]` — misal user paste dokumen yang sama dua kali di dua giliran berbeda.
-- Ganti kemunculan kedua dan seterusnya dengan referensi singkat: `[konten identik dengan pesan sebelumnya — lihat referensi #N]` dan sisipkan penjelasan singkat di system prompt bahwa referensi ini valid.
-- Threshold minimum: hanya proses blok yang panjangnya di atas `DEDUP_MIN_BLOCK_CHARS` (default 200 karakter) supaya tidak sia-sia memproses kalimat pendek yang kebetulan sama.
 
-**6. Auto-stop pada streaming** — modifikasi `lib/sse-forward.js` atau `lib/router-core.js` (mana yang lebih tepat setelah kamu baca kodenya) untuk mendeteksi kalau model sudah mengeluarkan tanda akhir jawaban yang jelas (misal blok kode tertutup lalu tidak ada token baru dalam N ms, atau token `[DONE]`-equivalent) dan pertimbangkan early-stop — TAPI ini opsional dan berisiko memotong jawaban yang belum selesai, jadi berikan flag eksplisit `EARLY_STOP_ENABLED=false` (default OFF) untuk fitur ini karena risikonya lebih tinggi dari Tier 1 lain. Kalau ragu implementasinya terlalu berisiko, skip fitur ini dan cukup dokumentasikan di kode kenapa di-skip.
+- Detect if there are identical text blocks (exact string match, not semantic) that appear in more than one message within the `messages[]` array — e.g., a user pastes the same document twice in two different turns.
+- Replace the second and subsequent occurrences with a short reference: `[content identical to a previous message — see reference #N]` and insert a brief explanation in the system prompt that this reference is valid.
+- Minimum threshold: only process blocks longer than `DEDUP_MIN_BLOCK_CHARS` (default 200 characters) so short sentences that happen to match aren't processed needlessly.
 
-#### TIER 2 — Lossy terkontrol (opt-in via parameter per-request)
+**6. Auto-stop on streaming** — modify `lib/sse-forward.js` or `lib/router-core.js` (whichever is more appropriate after you read the code) to detect when the model has clearly finished its answer (e.g., a closed code block followed by no new tokens for N ms, or a `[DONE]`-equivalent token) and consider early-stopping — BUT this is optional and risks cutting off an unfinished answer, so provide an explicit flag `EARLY_STOP_ENABLED=false` (default OFF) for this feature since its risk is higher than other Tier 1 items. If you feel the implementation is too risky, skip this feature and just document in the code why it was skipped.
+
+#### TIER 2 — Controlled lossy (opt-in via per-request parameter)
 
 **7. `compactStructuredData(text)`**
-- Deteksi data tabular dalam bentuk kalimat naratif berulang (pola seperti "Baris 1: kolom A adalah X, kolom B adalah Y. Baris 2: ...") dan tawarkan konversi ke CSV/TSV compact.
-- HARUS opt-in lewat parameter, karena deteksi pola ini heuristik dan bisa salah pada teks yang kebetulan mirip.
+
+- Detect tabular data expressed as repetitive narrative sentences (patterns like "Row 1: column A is X, column B is Y. Row 2: ...") and offer conversion to compact CSV/TSV.
+- MUST be opt-in via parameter, since this pattern detection is heuristic and can misfire on text that happens to look similar.
 - Return `{ text, applied, savingsEstimate }`.
 
 **8. `applyAbbreviationDictionary(text, dictionary, options)`**
-- Terima dictionary singkatan (bisa pakai yang sudah pernah dibuat sebelumnya di proyek lain — ID/JP/EN — atau default kosong dan user isi sendiri via parameter).
-- WAJIB hitung dulu: apakah `estimateTokens(legend) + estimateTokens(compactedText) < estimateTokens(originalText)`? Kalau tidak, skip dan laporkan `applied: false, reason: "overhead lebih mahal dari penghematan"`.
-- Kalau diterapkan, WAJIB sisipkan legend/definisi singkatan ke `system_prompt` yang dikirim ke model — JANGAN PERNAH kirim singkatan tanpa definisi eksplisit ke model, karena itu penyebab utama model salah tafsir/halusinasi.
+
+- Accept an abbreviation dictionary (can reuse ones previously built in another project — ID/JP/EN — or default to empty and let the user supply their own via parameter).
+- MUST first calculate: is `estimateTokens(legend) + estimateTokens(compactedText) < estimateTokens(originalText)`? If not, skip and report `applied: false, reason: "overhead is more expensive than the savings"`.
+- If applied, MUST insert the abbreviation legend/definitions into the `system_prompt` sent to the model — NEVER send abbreviations without explicit definitions to the model, since that is a primary cause of model misinterpretation/hallucination.
 - Return `{ text, legend, systemPromptAddition, applied, tokensSaved }`.
 
-#### TIER 3 — LLM-based summarization (opt-in eksplisit, wajib warning)
+#### TIER 3 — LLM-based summarization (explicit opt-in, mandatory warning)
 
 **9. `summarizeContextViaLLM(text, options)`**
-- Hanya dipanggil kalau caller eksplisit set parameter `allow_lossy_summarization: true` DAN context melebihi batas keras (`SUMMARIZATION_TRIGGER_TOKENS`, default 50000, configurable).
-- Gunakan provider chat completion yang SUDAH ADA di `lib/router-core.js` (panggil `executeProviderChain` dengan model murah/cepat, jangan bikin panggilan API terpisah) dengan system prompt yang eksplisit meminta: "Ringkas teks berikut TANPA menghilangkan angka, nama, tanggal, keputusan, atau detail teknis penting. Fokus memadatkan penjelasan naratif, bukan membuang fakta."
-- WAJIB return `{ summary, warning: "Ringkasan dibuat otomatis oleh LLM — detail mungkin hilang atau berubah, verifikasi manual disarankan", originalTokens, summarizedTokens }`.
-- WAJIB log ke stderr setiap kali fungsi ini dipanggil (pakai `lib/logger.js` yang sudah ada) karena ini operasi paling berisiko di seluruh modul.
+
+- Only called when the caller explicitly sets the parameter `allow_lossy_summarization: true` AND the context exceeds a hard limit (`SUMMARIZATION_TRIGGER_TOKENS`, default 50000, configurable).
+- Use the chat completion provider that ALREADY EXISTS in `lib/router-core.js` (call `executeProviderChain` with a cheap/fast model, don't make a separate API call) with a system prompt that explicitly requests: "Summarize the following text WITHOUT omitting numbers, names, dates, decisions, or important technical details. Focus on condensing narrative explanation, not discarding facts."
+- MUST return `{ summary, warning: "Summary was auto-generated by an LLM — details may be lost or altered, manual verification recommended", originalTokens, summarizedTokens }`.
+- MUST log to stderr every time this function is called (using the existing `lib/logger.js`) since this is the riskiest operation in the entire module.
 
 ---
 
-### Integrasi ke `lib/config.js`
+### Integration into `lib/config.js`
 
-Tambahkan getter-getter berikut mengikuti pola yang sudah ada di file itu (baca dulu contoh getter lain seperti `isModelFallbackEnabled()`, `getMaxTokensCap()` untuk konsistensi gaya):
+Add the following getters following the existing pattern in that file (first read other example getters like `isModelFallbackEnabled()`, `getMaxTokensCap()` for style consistency):
 
 ```
 isTokenSavingEnabled()              → env TOKEN_SAVING_ENABLED, default true
@@ -97,45 +104,45 @@ isStructuralMinifyEnabled()         → env STRUCTURAL_MINIFY_ENABLED, default t
 getSummarizationTriggerTokens()     → env SUMMARIZATION_TRIGGER_TOKENS, default 50000
 ```
 
-Tambahkan validasi numeric env var baru ini ke fungsi `validateConfig()` yang sudah ada (ada array `numericVars` di situ, tambahkan nama env var baru ke situ).
+Add validation for these new numeric env vars to the existing `validateConfig()` function (there's a `numericVars` array there — add the new env var names to it).
 
-### Integrasi ke `lib/router-core.js`
+### Integration into `lib/router-core.js`
 
-Di dalam `executeProviderChain()`, SETELAH cache check (yang terjadi di `index.js`/`http-server.js` sebelum memanggil fungsi ini) dan SEBELUM loop `for (const providerName of order)`, panggil pipeline token-saver secara berurutan sesuai tier di atas. Simpan hasil metadata token-saving ke variable dan sisipkan ke `result._meta` (field ini sudah ada di kode, ikuti pola `_meta` yang sudah dipakai untuk `fallbackModel`, `cappedNote`, dst).
+Inside `executeProviderChain()`, AFTER the cache check (which happens in `index.js`/`http-server.js` before calling this function) and BEFORE the `for (const providerName of order)` loop, call the token-saver pipeline in sequence according to the tiers above. Store the token-saving metadata result in a variable and attach it to `result._meta` (this field already exists in the code — follow the existing `_meta` pattern used for `fallbackModel`, `cappedNote`, etc.).
 
-### Integrasi ke `index.js` (MCP tool)
+### Integration into `index.js` (MCP tool)
 
-Tambahkan parameter baru ke tool `chat_completion` (ikuti pola Zod schema yang sudah ada untuk parameter lain di file itu):
+Add new parameters to the `chat_completion` tool (follow the existing Zod schema pattern used for other parameters in that file):
 
 ```
 allow_lossy_summarization: z.boolean().optional().default(false)
 abbreviation_dictionary: z.record(z.string()).optional()
-show_token_savings: z.boolean().optional().default(false) — kalau true, tampilkan metadata penghematan di response text
+show_token_savings: z.boolean().optional().default(false) — if true, display savings metadata in the response text
 ```
 
-Buat juga MCP tool baru `get_token_savings_report` yang menampilkan statistik agregat penghematan token dari sesi berjalan (mirip pola `get_benchmarks` atau `get_reputation` yang sudah ada di file itu — ikuti gaya penulisan tool yang konsisten).
+Also create a new MCP tool `get_token_savings_report` that displays aggregate token-savings statistics for the current session (similar to the existing `get_benchmarks` or `get_reputation` pattern in that file — follow the existing tool-writing style for consistency).
 
-### Integrasi ke `http-server.js`
+### Integration into `http-server.js`
 
-Tambahkan field yang sama (`allow_lossy_summarization`, `abbreviation_dictionary`) ke body request `POST /v1/chat/completions`, dan sertakan metadata token-saving di field response non-standar `x_token_savings` (pakai prefix `x_` karena ini bukan bagian spec OpenAI resmi, supaya tidak bentrok dengan client yang strict terhadap schema OpenAI).
+Add the same fields (`allow_lossy_summarization`, `abbreviation_dictionary`) to the `POST /v1/chat/completions` request body, and include the token-saving metadata in a non-standard response field `x_token_savings` (using the `x_` prefix since this is not part of the official OpenAI spec, to avoid conflicting with clients that strictly validate the OpenAI schema).
 
-### Testing & validasi wajib sebelum selesai
+### Mandatory testing & validation before completion
 
-1. Jalankan `npm run check` (script yang sudah ada di proyek ini) untuk memastikan semua file baru lolos `node --check`.
-2. Tulis contoh test manual di `test-call.js` yang sudah ada (baca dulu isinya untuk ikuti pola yang ada) untuk minimal 3 skenario: (a) context pendek — semua tier 0/1 jalan tanpa mengubah makna, (b) context panjang dengan pesan lama — verifikasi trimming melaporkan metadata dengan benar, (c) abbreviation dictionary — verifikasi ROI check bekerja (skip kalau tidak untung).
-3. Update `README.md` dan `ROADMAP.md` untuk mendokumentasikan fitur baru ini mengikuti format yang sudah ada di kedua file itu (bahasa Indonesia untuk ROADMAP.md, ikuti gaya penulisan yang sudah ada).
-4. Update `.env.example` dengan semua env var baru yang ditambahkan, ikuti format komentar penjelasan yang sudah ada di file itu.
-5. Bump versi di `package.json` sesuai semantic versioning (fitur baru = minor bump).
+1. Run `npm run check` (the existing script in this project) to make sure all new files pass `node --check`.
+2. Write manual test examples in the existing `test-call.js` (read it first to follow the existing pattern) for at least 3 scenarios: (a) short context — all tier 0/1 run without changing meaning, (b) long context with old messages — verify trimming reports metadata correctly, (c) abbreviation dictionary — verify the ROI check works (skips when not beneficial).
+3. Update `README.md` and `ROADMAP.md` to document this new feature following the existing format in both files (Indonesian for ROADMAP.md, following the existing writing style).
+4. Update `.env.example` with all new env vars added, following the existing comment/explanation format in that file.
+5. Bump the version in `package.json` according to semantic versioning (new feature = minor bump).
 
-### Batasan keras — JANGAN LAKUKAN
+### Hard constraints — DO NOT DO THIS
 
-- JANGAN implementasikan Tier 2/Tier 3 sebagai default aktif — harus selalu opt-in eksplisit.
-- JANGAN pernah mengirim singkatan/simbol ke model tanpa definisi eksplisit di system prompt.
-- JANGAN silent-drop context tanpa melaporkan di metadata response.
-- JANGAN bikin ulang cache/dedup yang sudah ada — pakai `lib/cache.js` dan `lib/dedup.js` yang sudah ada.
-- JANGAN gunakan regex untuk minify kode — gunakan parser AST asli (terser untuk JS/TS).
-- JANGAN tambahkan dependency berat (hindari framework besar) — proyek ini sengaja zero-dependency selain `@modelcontextprotocol/sdk`, `dotenv`, dan sekarang `terser`/`csso` (pilih yang paling ringan).
+- DO NOT implement Tier 2/Tier 3 as enabled by default — they must always be explicit opt-in.
+- NEVER send abbreviations/symbols to the model without an explicit definition in the system prompt.
+- NEVER silently drop context without reporting it in the response metadata.
+- DO NOT recreate the existing cache/dedup — use the existing `lib/cache.js` and `lib/dedup.js`.
+- DO NOT use regex for code minification — use a real AST parser (terser for JS/TS).
+- DO NOT add heavy dependencies (avoid large frameworks) — this project is intentionally zero-dependency aside from `@modelcontextprotocol/sdk`, `dotenv`, and now `terser`/`csso` (pick the lightest one).
 
-Setelah selesai, laporkan ringkasan singkat di akhir: fitur apa saja yang diimplementasikan, file apa saja yang diubah/dibuat, dan estimasi penghematan token rata-rata dari masing-masing tier berdasarkan pengujian manual yang kamu lakukan.
+When finished, report a short summary at the end: which features were implemented, which files were changed/created, and the average estimated token savings for each tier based on the manual testing you performed.
 
-## SELESAI PROMPT
+## END PROMPT

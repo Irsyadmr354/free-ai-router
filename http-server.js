@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * http-server.js
- * OpenAI-compatible HTTP entry point for free-ai-router (v6.0.0).
+ * OpenAI-compatible HTTP entry point for free-ai-router (v7.0.0).
  *
  * This exists alongside index.js (the original MCP/stdio entry point,
  * kept but no longer the primary way to use the router) to let ANY tool
@@ -209,7 +209,7 @@ async function handleChatCompletions(req, res) {
   const id = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
-  if (stream && !tools?.length) {
+  if (stream) {
     // Vercel AI SDK clients (useChat/useCompletion) may send this header, or
     // request it explicitly via ?vercel_ai_data_stream=1, to get the
     // x-vercel-ai-data-stream response header alongside our OpenAI-compatible
@@ -217,6 +217,11 @@ async function handleChatCompletions(req, res) {
     const url = new URL(req.url, `http://localhost:${PORT}`);
     const vercelAiDataStream = req.headers["x-vercel-ai-data-stream"] !== undefined
       || url.searchParams.get("vercel_ai_data_stream") === "1";
+
+    const forceNonStreaming = Boolean(tools?.length);
+    if (forceNonStreaming) {
+      log("Tools present — forcing non-streaming upstream for reliable tool calling, but returning SSE stream to client");
+    }
 
     // True SSE forwarding — no collect-all-then-return.
     return forwardStream(res, req, {
@@ -227,19 +232,20 @@ async function handleChatCompletions(req, res) {
         const result = await executeProviderChain({
           order, keys, model, params, tools, tool_choice,
           response_format: responseFormatValue, hasImage, session_id,
-          sanitizeNote, onDelta, abortSignal, task_type,
+          sanitizeNote, 
+          onDelta: forceNonStreaming ? undefined : onDelta, 
+          abortSignal, task_type,
           allowLossySummarization: allow_lossy_summarization,
           abbreviationDictionary: abbreviation_dictionary,
         });
+        
+        if (forceNonStreaming && result.text) {
+          onDelta(result.text);
+        }
+        
         return { model: `${result.provider}/${result.model}`, toolCalls: result.toolCalls };
       },
     });
-  }
-  // When tools are present, force non-streaming — streaming providers
-  // (groq, openrouter, mistral) either don't support tool calling on
-  // free tier or return empty responses. Non-streaming works correctly.
-  if (stream && tools?.length) {
-    log("Tools present — forcing non-streaming for reliable tool calling");
   }
 
   // Non-streaming: identical behavior to before, just returned as OpenAI JSON.
@@ -312,6 +318,8 @@ async function handleChatCompletions(req, res) {
 function handleModels(req, res) {
   const created = Math.floor(Date.now() / 1000);
   const data = [];
+  // Virtual ensemble model (Mixture of Agents)
+  data.push({ id: "ensemble", object: "model", created, owned_by: "free-ai-router", provider: "ensemble (Mixture of Agents)" });
   for (const [providerName, entry] of Object.entries(PROVIDER_REGISTRY)) {
     for (const modelId of entry.models) {
       data.push({ id: modelId, object: "model", created, owned_by: "free-ai-router", provider: providerName });
@@ -413,9 +421,9 @@ for (const warning of validateConfig()) {
   logError(`Config warning: ${warning}`);
 }
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, () => {
   const base = `http://localhost:${PORT}/v1`;
-  log(`free-ai-router HTTP server v6.0.0 started`);
+  log(`free-ai-router HTTP server v7.0.0 started`);
   log(`Base URL for IDE/CLI "custom OpenAI API endpoint" settings: ${base}`);
   log(`API key field: any non-empty string works (e.g. "free-ai-router") — real auth is server-side via .env`);
   log(`Endpoints: POST ${base}/chat/completions | GET ${base}/models | GET ${base}/health`);

@@ -1,11 +1,11 @@
 # free-ai-router
 
-> A personal AI infrastructure layer — MCP server + OpenAI-compatible HTTP proxy that routes requests across **7 free-tier LLM providers** with intelligent adaptive routing, persistent SQLite storage, circuit breakers, semantic caching, and automated data retention.
+> A personal AI infrastructure layer — MCP server + OpenAI-compatible HTTP proxy that routes requests across **7 free-tier LLM providers** with intelligent adaptive routing, model ensembling, universal tool polyfill, hot-swap streaming fallback, local Auto-RAG, persistent SQLite storage, circuit breakers, semantic caching, and automated data retention.
 
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![MCP SDK](https://img.shields.io/badge/@modelcontextprotocol%2Fsdk-1.29.0-blue)](https://www.npmjs.com/package/@modelcontextprotocol/sdk)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
-[![Version](https://img.shields.io/badge/version-6.0.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-7.0.0-orange)](CHANGELOG.md)
 
 ---
 
@@ -15,9 +15,9 @@ free-ai-router is a self-hosted AI router that runs on your laptop and acts as t
 
 ```
 Request → Prompt Analysis → MAB Routing → Budget/Anomaly Check
-       → Token Saving → Exact Cache → Semantic Cache
-       → Provider Fallback Chain (with Circuit Breaker + Queue)
-       → Persistent Storage → Response
+       → Token Saving → Auto-RAG → Exact Cache → Semantic Cache
+       → Provider Fallback Chain (with Circuit Breaker + Queue + Hot-Swap Stream)
+       → Tool Polyfill → Ensemble Synthesis → Persistent Storage → Response
 ```
 
 Everything is stored locally in SQLite with automated retention — no data leaves your machine except the actual LLM API calls.
@@ -37,10 +37,17 @@ Everything is stored locally in SQLite with automated retention — no data leav
 8. **Request queue** — all providers unavailable? Wait up to 30s for first recovery, then retry
 
 ### Token saving (reduces input token count automatically)
-- **Tier 0** (always on): whitespace normalization, JSON/CSS minification
+- **Tier 0** (always on): whitespace normalization, JSON/CSS/JS minification (AST via terser)
 - **Tier 1** (always on): context window trimming, duplicate block deduplication
+- **Auto-RAG** (automatic): prompts >20k tokens are chunked and embedded locally via `all-MiniLM-L6-v2`, only relevant chunks are sent
 - **Tier 2** (opt-in): abbreviation dictionary with ROI check
 - **Tier 3** (opt-in explicit): LLM-based summarization for very long contexts
+
+### Advanced features
+- **Model Ensembling** — set `model: "ensemble"` to query 3 providers in parallel, then synthesize the best answer via a 4th
+- **Universal Tool Polyfill** — providers without native tool support get tools injected as structured system prompts, with `<tool_call>` XML parsing on output
+- **Hot-Swap Streaming Fallback** — if a stream dies mid-response, the next provider picks up exactly where the last one left off
+- **Local Auto-RAG** — massive prompts are automatically chunked, embedded locally, and only the most relevant chunks are sent to the API
 
 ---
 
